@@ -1,0 +1,413 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using AdminToys;
+using LabApi.Features.Enums;
+using LabApi.Features.Wrappers;
+using Mirror;
+using ScpslPluginStarter.Core;
+using UnityEngine;
+using BasePrimitiveObjectToy = AdminToys.PrimitiveObjectToy;
+using BaseTextToy = AdminToys.TextToy;
+using PrimitiveObjectToy = LabApi.Features.Wrappers.PrimitiveObjectToy;
+using TextToy = LabApi.Features.Wrappers.TextToy;
+
+namespace ScpslPluginStarter.Services;
+
+internal sealed class SafezoneVisualService
+{
+    // Opaque plate sized to the two text lines (about 1.1 m x 0.3 m as rendered, centred on the text anchor) plus a
+    // margin, so the gate stays visible around it while the plate still hides the opposite face's mirrored text.
+    internal static readonly Vector3 Scp914PanelPlateSize = new(1.7f, 0.6f, 0.025f);
+    internal const float Scp914PanelTextScale = 0.12f;
+
+    // The closed gate leaves extend up to about 0.36 gate-local units either side of the origin; both faces sit
+    // clear of them so the leaves cannot hide the panel text.
+    internal const float Scp914PanelFaceOffset = 0.6f;
+
+    // Wide enough that each configured panel line stays on one line at the normal text scale.
+    internal static readonly Vector2 Scp914PanelTextDisplaySize = new(240f, 60f);
+
+    // Clearance, in gate-local units, between the text and its backing; 0.02 let the backing hide the text.
+    internal const float Scp914PanelTextGap = 0.15f;
+
+    // Cells name plates reuse the 914 plate and text size. Each exit gets one plate and label per side, just
+    // outside the boundary faces (0.25 m either side of the edge) and above the door, so the doorway stays clear.
+    internal const float CellsPanelPlateOffset = 0.3f;
+    internal const float CellsPanelTextOffset = 0.4f;
+    internal const float CellsPanelHeight = 3.1f;
+
+    // The corridor on the cells side of the exit has a low ceiling; each plate is kept this far below the ceiling
+    // found by a native raycast a metre from the edge (clear of the door lintel).
+    internal const float CellsPanelCeilingClearance = 0.45f;
+
+    private readonly WarmupSafezoneConfig _config;
+    private readonly WarmupLocalization _localization;
+    private readonly List<AdminToy> _toys = new();
+    private readonly List<(string Kind, Vector3 Position)> _panelParts = new();
+    private readonly List<(string Kind, Vector3 Position)> _cellsPanelParts = new();
+    private string _renderedSurfaceSignature = string.Empty;
+
+    public SafezoneVisualService(
+        WarmupSafezoneConfig config,
+        WarmupLocalization localization)
+    {
+        _config = config;
+        _localization = localization;
+    }
+
+    public int LiveToyCount => _toys.Count(toy => toy != null && !toy.IsDestroyed);
+
+    public string Describe914Gate()
+    {
+        Door? gate = Door.Get(DoorName.Lcz914Gate);
+        if (gate == null || gate.IsDestroyed)
+        {
+            return "none";
+        }
+
+        Vector3 p = gate.Transform.position;
+        Vector3 f = gate.Transform.forward;
+        Vector3 s = gate.Transform.lossyScale;
+        string faces = string.Join(";", _panelParts.Select(part => FormattableString.Invariant($"{part.Kind}=({part.Position.x:0.##},{part.Position.y:0.##},{part.Position.z:0.##})")));
+        return FormattableString.Invariant($"({p.x:0.##},{p.y:0.##},{p.z:0.##}) forward=({f.x:0.##},{f.y:0.##},{f.z:0.##}) scale=({s.x:0.##},{s.y:0.##},{s.z:0.##}) panel=[{faces}]");
+    }
+
+    public void Ensure()
+    {
+        if (!_config.Enabled || !_config.SafezoneVisualsEnabled || !CanSpawnVisualToys())
+        {
+            Destroy();
+            return;
+        }
+
+        Door? scp914Gate = _config.Scp914SafezoneEnabled ? Door.Get(DoorName.Lcz914Gate) : null;
+        int expected914Toys = scp914Gate != null && !scp914Gate.IsDestroyed ? 4 : 0;
+        bool hasCellsTile = _config.ClassDCellsSafezoneEnabled && ClassDCellsTile.TryGet(out _, out _);
+        int expectedCellsToys = hasCellsTile ? ExpectedCellsToys() : 0;
+        string surfaceSignature = SurfaceSignature() + "|" + CellsSignature(hasCellsTile);
+        int expectedSurfaceToys = SurfaceSafezoneGeometry.NormalizeAxis(_config.SurfaceEscapeSafezoneAxis) == "z" ? 3 : 4;
+        bool geometryChanged = !string.Equals(_renderedSurfaceSignature, surfaceSignature, StringComparison.Ordinal);
+        bool toysMissing = _toys.Count != expectedSurfaceToys + expected914Toys + expectedCellsToys
+            || _toys.Any(toy => toy == null || toy.IsDestroyed);
+        if (!geometryChanged && !toysMissing)
+        {
+            return;
+        }
+
+        Destroy();
+        CreateConfiguredSurfaceBoundary();
+
+        if (scp914Gate != null && !scp914Gate.IsDestroyed)
+        {
+            CreateScp914Panel(scp914Gate);
+        }
+
+        if (hasCellsTile)
+        {
+            CreateClassDCellsBoundary();
+        }
+
+        _renderedSurfaceSignature = surfaceSignature;
+    }
+
+    public void Destroy()
+    {
+        foreach (AdminToy toy in _toys.Where(toy => toy != null).ToArray())
+        {
+            if (!toy.IsDestroyed)
+            {
+                toy.Destroy();
+            }
+        }
+
+        _toys.Clear();
+        _panelParts.Clear();
+        _cellsPanelParts.Clear();
+        _renderedSurfaceSignature = string.Empty;
+    }
+
+    private void CreateConfiguredSurfaceBoundary()
+    {
+        const float thickness = 0.08f;
+        Color color = new(0.25f, 0.85f, 1f, 0.35f);
+        string label = _localization.Shared("SAFE ZONE", "安全区");
+        switch (SurfaceSafezoneGeometry.NormalizeAxis(_config.SurfaceEscapeSafezoneAxis))
+        {
+            case "x":
+                CreateWall(new Vector3(_config.SurfaceEscapeSafezoneMaxZ, 295f, 0f), new Vector3(thickness, 36f, 260f), color);
+                CreateWall(new Vector3(_config.SurfaceEscapeSafezoneMaxZ + 0.1f, 295f, 0f), new Vector3(thickness, 36f, 260f), color);
+                CreateSurfaceLabel(new Vector3(_config.SurfaceEscapeSafezoneMaxZ + 0.18f, 300f, 0f), Quaternion.Euler(0f, 90f, 0f), label);
+                CreateSurfaceLabel(new Vector3(_config.SurfaceEscapeSafezoneMaxZ - 0.18f, 300f, 0f), Quaternion.Euler(0f, -90f, 0f), label);
+                break;
+
+            case "y":
+                CreateWall(new Vector3(125f, _config.SurfaceEscapeSafezoneMaxZ, 0f), new Vector3(260f, thickness, 260f), color);
+                CreateWall(new Vector3(125f, _config.SurfaceEscapeSafezoneMaxZ + 0.1f, 0f), new Vector3(260f, thickness, 260f), color);
+                CreateSurfaceLabel(new Vector3(125f, _config.SurfaceEscapeSafezoneMaxZ + 0.18f, 0f), Quaternion.Euler(90f, 0f, 0f), label);
+                CreateSurfaceLabel(new Vector3(125f, _config.SurfaceEscapeSafezoneMaxZ - 0.18f, 0f), Quaternion.Euler(-90f, 0f, 0f), label);
+                break;
+
+            default:
+                float minX = _config.SurfaceEscapeSafezoneMinX;
+                const float maxX = 260f;
+                float width = Mathf.Max(1f, maxX - minX);
+                float centerX = minX + (width * 0.5f);
+                CreateWall(new Vector3(centerX, 295f, _config.SurfaceEscapeSafezoneMaxZ - 0.05f), new Vector3(width, 36f, thickness), color);
+                CreateWall(new Vector3(centerX, 295f, _config.SurfaceEscapeSafezoneMaxZ + 0.05f), new Vector3(width, 36f, thickness), color);
+                CreateSurfaceLabel(new Vector3(136.45f, 295.8f, _config.SurfaceEscapeSafezoneMaxZ + 0.14f), Quaternion.identity, label);
+                break;
+        }
+    }
+
+    private void CreateSurfaceLabel(Vector3 position, Quaternion rotation, string text) =>
+        CreateWorldLabel(position, rotation, text, null, new Vector3(0.32f, 0.32f, 0.32f), new Vector2(80f, 4f));
+
+    // The cells follow the same damage rule as SCP-914, so both panels show the same configured text.
+    private string SafezonePanelText() => _localization.Shared(
+        NormalizeLegacyPanelText(_config.Scp914SafezonePanelTextEnglish, false),
+        NormalizeLegacyPanelText(_config.Scp914SafezonePanelTextChinese, true));
+
+    private void CreateScp914Panel(Door door)
+    {
+        string text = SafezonePanelText();
+        // Text reads correctly when the camera looks along its forward axis, so each face's text
+        // sits on its outer side and points back toward the gate.
+        CreatePanelFace(door.Transform, Scp914PanelFaceOffset, Quaternion.Euler(0f, 180f, 0f), text);
+        CreatePanelFace(door.Transform, -Scp914PanelFaceOffset, Quaternion.identity, text);
+    }
+
+    // Faces are unparented world objects posed from the static gate. Only the backing's face size
+    // is scaled; its depth stays thin so the text in front of it is not buried inside the box.
+    private void CreatePanelFace(Transform door, float localZ, Quaternion localRotation, string text)
+    {
+        Quaternion rotation = door.rotation * localRotation;
+        PrimitiveObjectToy backing = PrimitiveObjectToy.Create(
+            door.TransformPoint(new Vector3(0f, 1.85f, localZ)),
+            rotation,
+            Scp914PanelPlateSize,
+            null,
+            false);
+        backing.Type = PrimitiveType.Cube;
+        backing.Flags = PrimitiveFlags.Visible;
+        // Fully opaque: only a depth-writing backing hides the mirrored text of the opposite face. Translucent
+        // backings (alpha 0.45 and 0.75 were tried) let that text render through at nearly full strength.
+        backing.Color = new Color(0.02f, 0.14f, 0.17f, 1f);
+        backing.IsStatic = true;
+        backing.SyncInterval = 0f;
+        backing.Spawn();
+        _toys.Add(backing);
+        _panelParts.Add(("plate", backing.Position));
+
+        float textZ = localZ > 0f ? localZ + Scp914PanelTextGap : localZ - Scp914PanelTextGap;
+        _panelParts.Add(("text", door.TransformPoint(new Vector3(0f, 1.85f, textZ))));
+        CreateWorldLabel(
+            door.TransformPoint(new Vector3(0f, 1.85f, textZ)),
+            rotation,
+            text,
+            null,
+            new Vector3(Scp914PanelTextScale, Scp914PanelTextScale, Scp914PanelTextScale),
+            Scp914PanelTextDisplaySize);
+    }
+
+    private void CreateClassDCellsBoundary()
+    {
+        if (!ClassDCellsTile.TryGet(out Vector3Int coords, out Room? room) || room == null)
+        {
+            return;
+        }
+
+        // The safezone is the whole room, so the bound is drawn only across main-tile edges that hold an
+        // exit door. One face just inside and one just outside, so it shows in front of a closed door that
+        // sits exactly on the grid edge from either side.
+        const float height = 5f;
+        const float thickness = 0.04f;
+        const float offset = 0.25f;
+        Color color = new(0.25f, 0.85f, 1f, 0.35f);
+        Bounds tile = ClassDCellsTile.FloorBounds(coords, room.Position.y);
+        float y = room.Position.y + (height * 0.5f) - 0.2f;
+        List<Vector3> exits = ExitDoorPositions(room, tile).ToList();
+        foreach (float side in new[] { -offset, offset })
+        {
+            if (exits.Any(p => Mathf.Abs(p.z - tile.min.z) < 1f))
+                CreateWall(new Vector3(tile.center.x, y, tile.min.z - side), new Vector3(tile.size.x, height, thickness), color);
+            if (exits.Any(p => Mathf.Abs(p.z - tile.max.z) < 1f))
+                CreateWall(new Vector3(tile.center.x, y, tile.max.z + side), new Vector3(tile.size.x, height, thickness), color);
+            if (exits.Any(p => Mathf.Abs(p.x - tile.min.x) < 1f))
+                CreateWall(new Vector3(tile.min.x - side, y, tile.center.z), new Vector3(thickness, height, tile.size.z), color);
+            if (exits.Any(p => Mathf.Abs(p.x - tile.max.x) < 1f))
+                CreateWall(new Vector3(tile.max.x + side, y, tile.center.z), new Vector3(thickness, height, tile.size.z), color);
+        }
+
+        string text = SafezonePanelText();
+        foreach (Vector3 exit in exits)
+        {
+            Vector3 outward = ExitNormal(exit, tile);
+            // Text reads correctly when the camera looks along its forward axis: the outer label faces a player
+            // walking in, the inner label a player walking out.
+            CreateCellsPanelFace(CellsPanelAnchor(exit, outward, room.Position.y), outward, Quaternion.LookRotation(-outward), text);
+            CreateCellsPanelFace(CellsPanelAnchor(exit, -outward, room.Position.y), -outward, Quaternion.LookRotation(outward), text);
+        }
+    }
+
+    private void CreateCellsPanelFace(Vector3 anchor, Vector3 side, Quaternion rotation, string text)
+    {
+        PrimitiveObjectToy plate = PrimitiveObjectToy.Create(anchor + side * CellsPanelPlateOffset, rotation, Scp914PanelPlateSize, null, false);
+        plate.Type = PrimitiveType.Cube;
+        plate.Flags = PrimitiveFlags.Visible;
+        // Opaque for the same reason as the 914 plate: it hides the mirrored label on the other side.
+        plate.Color = new Color(0.02f, 0.14f, 0.17f, 1f);
+        plate.IsStatic = true;
+        plate.SyncInterval = 0f;
+        plate.Spawn();
+        _toys.Add(plate);
+        _cellsPanelParts.Add(("plate", plate.Position));
+
+        Vector3 textPosition = anchor + side * CellsPanelTextOffset;
+        _cellsPanelParts.Add(("text", textPosition));
+        CreateWorldLabel(
+            textPosition,
+            rotation,
+            text,
+            null,
+            new Vector3(Scp914PanelTextScale, Scp914PanelTextScale, Scp914PanelTextScale),
+            Scp914PanelTextDisplaySize);
+    }
+
+    private static Vector3 CellsPanelAnchor(Vector3 exit, Vector3 side, float floorY)
+    {
+        float height = CellsPanelHeight;
+        Vector3 probe = new Vector3(exit.x, floorY + 1.5f, exit.z) + side;
+        if (Physics.Raycast(probe, Vector3.up, out RaycastHit hit, 5f, ~0, QueryTriggerInteraction.Ignore))
+        {
+            height = Mathf.Min(height, hit.point.y - floorY - CellsPanelCeilingClearance);
+        }
+
+        return new Vector3(exit.x, floorY + height, exit.z);
+    }
+
+    private static Vector3 ExitNormal(Vector3 exit, Bounds tile)
+    {
+        (float distance, Vector3 normal)[] edges =
+        {
+            (Mathf.Abs(exit.x - tile.min.x), Vector3.left),
+            (Mathf.Abs(exit.x - tile.max.x), Vector3.right),
+            (Mathf.Abs(exit.z - tile.min.z), Vector3.back),
+            (Mathf.Abs(exit.z - tile.max.z), Vector3.forward),
+        };
+        return edges.OrderBy(edge => edge.distance).First().normal;
+    }
+
+    // Two boundary faces per exit edge plus a plate and label on each side of every exit.
+    private static int ExpectedCellsToys()
+    {
+        if (!ClassDCellsTile.TryGet(out Vector3Int coords, out Room? room) || room == null)
+        {
+            return 0;
+        }
+
+        Bounds tile = ClassDCellsTile.FloorBounds(coords, room.Position.y);
+        List<Vector3> exits = ExitDoorPositions(room, tile).ToList();
+        int edges = exits.Select(exit => ExitNormal(exit, tile)).Distinct().Count();
+        return (2 * edges) + (4 * exits.Count);
+    }
+
+    private static IEnumerable<Vector3> ExitDoorPositions(Room room, Bounds tile) => room.Doors
+        .Where(door => door != null && !door.IsDestroyed)
+        .Select(door => door.Position)
+        .Where(p => Mathf.Min(Mathf.Abs(p.x - tile.min.x), Mathf.Abs(p.x - tile.max.x), Mathf.Abs(p.z - tile.min.z), Mathf.Abs(p.z - tile.max.z)) < 1f);
+
+    public string DescribeClassDCells()
+    {
+        if (!ClassDCellsTile.TryGet(out Vector3Int coords, out Room? room) || room == null)
+        {
+            return "none";
+        }
+
+        Bounds tile = ClassDCellsTile.FloorBounds(coords, room.Position.y);
+        Bounds whole = ClassDCellsTile.RoomBounds();
+        IEnumerable<string> exits = ExitDoorPositions(room, tile)
+            .Select(p => FormattableString.Invariant($"({p.x:0.##},{p.y:0.##},{p.z:0.##})"));
+        IEnumerable<string> panels = _cellsPanelParts
+            .Select(part => FormattableString.Invariant($"{part.Kind}=({part.Position.x:0.##},{part.Position.y:0.##},{part.Position.z:0.##})"));
+        return FormattableString.Invariant($"x={tile.min.x:0.##}..{tile.max.x:0.##} z={tile.min.z:0.##}..{tile.max.z:0.##} floor={room.Position.y:0.##} room_bounds=x={whole.min.x:0.##}..{whole.max.x:0.##},z={whole.min.z:0.##}..{whole.max.z:0.##} exits=[{string.Join(";", exits)}] panels=[{string.Join(";", panels)}]");
+    }
+
+    private string CellsSignature(bool hasCellsTile) =>
+        hasCellsTile && ClassDCellsTile.TryGet(out Vector3Int coords, out _) ? coords.ToString() : "none";
+
+    private void CreateWall(Vector3 position, Vector3 scale, Color color)
+    {
+        PrimitiveObjectToy wall = PrimitiveObjectToy.Create(position, Quaternion.identity, scale, null, false);
+        wall.Type = PrimitiveType.Cube;
+        wall.Flags = PrimitiveFlags.Visible;
+        wall.Color = color;
+        wall.IsStatic = true;
+        wall.SyncInterval = 0f;
+        wall.Spawn();
+        _toys.Add(wall);
+    }
+
+    private void CreateWorldLabel(
+        Vector3 position,
+        Quaternion rotation,
+        string text,
+        Transform? parent,
+        Vector3? scale = null,
+        Vector2? displaySize = null)
+    {
+        TextToy label = TextToy.Create(position, rotation, scale ?? new Vector3(0.24f, 0.24f, 0.24f), parent, false);
+        label.TextFormat = $"<alpha=#FF><align=center><b><color=#42F5E9>{text}</color></b></align>";
+        label.DisplaySize = displaySize ?? new Vector2(40f, 4f);
+        label.IsStatic = true;
+        label.SyncInterval = 0f;
+        label.Spawn();
+        _toys.Add(label);
+    }
+
+    private static string NormalizeLegacyPanelText(string? configured, bool chinese)
+    {
+        string text = configured ?? string.Empty;
+        if (text.IndexOf("godmode", StringComparison.OrdinalIgnoreCase) >= 0 || text.Contains("无敌"))
+        {
+            return chinese ? "安全区\n禁止造成或受到伤害" : "SAFE ZONE\nDAMAGE BLOCKED";
+        }
+
+        return string.IsNullOrWhiteSpace(text)
+            ? (chinese ? "安全区\n禁止造成或受到伤害" : "SAFE ZONE\nDAMAGE BLOCKED")
+            : text;
+    }
+
+    private string SurfaceSignature() => string.Join("|",
+        SurfaceSafezoneGeometry.NormalizeAxis(_config.SurfaceEscapeSafezoneAxis),
+        _config.SurfaceEscapeSafezoneMaxZ,
+        _config.SurfaceEscapeSafezoneLessThan,
+        _config.SurfaceEscapeSafezoneMinX);
+
+    private static bool CanSpawnVisualToys()
+    {
+        if (NetworkClient.prefabs == null)
+        {
+            return false;
+        }
+
+        bool primitive = false;
+        bool text = false;
+        foreach (GameObject prefab in NetworkClient.prefabs.Values)
+        {
+            if (prefab == null)
+            {
+                continue;
+            }
+
+            primitive |= prefab.GetComponent<BasePrimitiveObjectToy>() != null;
+            text |= prefab.GetComponent<BaseTextToy>() != null;
+            if (primitive && text)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
