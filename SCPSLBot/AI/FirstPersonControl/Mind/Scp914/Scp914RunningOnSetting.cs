@@ -57,6 +57,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Mind.Scp914
             }
 
             this.ItemsTransformedTime = Time.time;
+            this.ItemsTransformedGeneration = generation;
 
             yield return Timing.WaitForSeconds(5f);
             if (isDisposed || generation != activationGeneration)
@@ -93,6 +94,8 @@ namespace SCPSLBot.AI.FirstPersonControl.Mind.Scp914
 
         public Scp914KnobSetting? RunningKnobSetting { get; private set; }
         public float? ItemsTransformedTime { get; private set; }
+        public int ActivationGeneration => activationGeneration;
+        public int ItemsTransformedGeneration { get; private set; }
 
         private void Update(Scp914KnobSetting? newSetting)
         {

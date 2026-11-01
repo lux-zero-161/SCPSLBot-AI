@@ -45,6 +45,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private float nextSearchStepTime;
         private int searchStep;
         private float coverUntil;
+        private float nextCoverSearchTime;
         private Vector3 coverThreatPosition;
         private Vector3? coverPosition;
         private int strafeDirection = 1;
@@ -226,6 +227,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
                 return true;
             }
 
+            if (!coverPosition.HasValue
+                && Time.time < nextCoverSearchTime
+                && Vector3.Distance(coverThreatPosition, threatPosition) < 4f)
+            {
+                return false;
+            }
+
             if (!RoomUtils.TryGetRoom(botPlayer.PlayerPosition, out var room)
                 || room == null
                 || NavigationSystem.Instance.Backend == null)
@@ -263,12 +271,15 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             if (!best.HasValue)
             {
                 coverPosition = null;
+                coverThreatPosition = threatPosition;
+                nextCoverSearchTime = Time.time + 1f;
                 return false;
             }
 
             coverPosition = best;
             coverThreatPosition = threatPosition;
             coverUntil = Time.time + CoverMemorySeconds;
+            nextCoverSearchTime = Time.time + CoverMemorySeconds;
             botPlayer.MoveToPosition(best.Value);
             return true;
         }

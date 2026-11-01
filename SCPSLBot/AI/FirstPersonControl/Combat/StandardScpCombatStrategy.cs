@@ -30,28 +30,20 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
         private static readonly string[] Scp106MovementActions =
         {
-            "Scp106StalkAbility:Shoot->Click",
-            "Scp106Stalk:Shoot->Click",
-            "Scp106SinkholeAbility:Shoot->Click",
-            "Scp106Sinkhole:Shoot->Click",
-            "Scp106TeleportAbility:Shoot->Click",
-            "Scp106Teleport:Shoot->Click",
-            "Scp106PortalAbility:Shoot->Click",
-            "Scp106Portal:Shoot->Click",
+            "Scp106StalkAbility:Run->Click",
         };
 
         private static readonly string[] Scp939UtilityActions =
         {
             "Scp939LungeAbility:Shoot->Click",
             "Scp939Lunge:Shoot->Click",
-            "Scp939AmnesticCloudAbility:Shoot->Click",
-            "Scp939AmnesticCloud:Shoot->Click",
+            "Scp939AmnesticCloudAbility:ToggleFlashlight->Click",
+            "Scp939AmnesticCloud:ToggleFlashlight->Click",
         };
 
         private static readonly string[] Scp3114UtilityActions =
         {
-            "Scp3114DisguiseAbility:Shoot->Click",
-            "Scp3114Disguise:Shoot->Click",
+            "Scp3114Disguise:Interact->Click",
         };
 
         private static readonly string[] Scp3114AttackActions =
@@ -164,11 +156,10 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             var actions = role switch
             {
                 RoleTypeId.Scp049 => Scp049SenseActions,
-                RoleTypeId.Scp106 => Scp106MovementActions,
                 RoleTypeId.Scp939 => new[]
                 {
-                    "Scp939AmnesticCloudAbility:Shoot->Click",
-                    "Scp939AmnesticCloud:Shoot->Click",
+                    "Scp939AmnesticCloudAbility:ToggleFlashlight->Click",
+                    "Scp939AmnesticCloud:ToggleFlashlight->Click",
                 },
                 RoleTypeId.Scp3114 => Scp3114UtilityActions,
                 _ => Array.Empty<string>(),

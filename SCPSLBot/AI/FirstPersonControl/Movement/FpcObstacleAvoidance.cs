@@ -16,6 +16,8 @@ namespace SCPSLBot.AI.FirstPersonControl.Movement
         private const float MaxSteerWeight = 0.85f;
         private const float HeadOnDot = 0.35f;
         private const float SideProbeMeters = 1.5f;
+        private const float GroundLookAhead = 1.15f;
+        private const float MaximumSafeDrop = 2.5f;
 
         private static readonly int ExcludedLayers = LayerMask.GetMask("Player", "Hitbox", "Door");
 
@@ -60,6 +62,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Movement
             }
 
             var mask = FpcStateProcessor.Mask & ~ExcludedLayers;
+            var verticalDelta = waypoint.y - botPlayer.PlayerPosition.y;
+            if (verticalDelta > -0.75f && !HasFloorAhead(worldMoveDirection, mask))
+            {
+                LastObstacle = "void-edge";
+                return Vector3.zero;
+            }
+
             if (!Physics.CapsuleCast(bottom, top, radius * 0.9f, worldMoveDirection, out var hit, LookAheadMeters, mask, QueryTriggerInteraction.Ignore))
             {
                 LastObstacle = "none";
@@ -102,6 +111,19 @@ namespace SCPSLBot.AI.FirstPersonControl.Movement
             var steered = worldMoveDirection * (1f - weight) + tangent * weight + normal * (weight * 0.25f);
             steered = Vector3.ProjectOnPlane(steered, Vector3.up);
             return steered.sqrMagnitude < 1e-4f ? tangent : steered.normalized;
+        }
+
+        private bool HasFloorAhead(Vector3 worldMoveDirection, int mask)
+        {
+            var origin = botPlayer.PlayerPosition
+                         + worldMoveDirection * GroundLookAhead
+                         + Vector3.up * 0.75f;
+            return Physics.Raycast(
+                origin,
+                Vector3.down,
+                MaximumSafeDrop + 0.75f,
+                mask,
+                QueryTriggerInteraction.Ignore);
         }
     }
 }

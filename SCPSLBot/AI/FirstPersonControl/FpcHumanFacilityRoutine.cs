@@ -46,6 +46,8 @@ namespace SCPSLBot.AI.FirstPersonControl
         private float nextLockerActionTime;
         private float next914ActionTime;
         private float collectUntil;
+        private float transformationStartedAt;
+        private int expected914Generation;
         private bool used914ThisLife;
 
         public FpcHumanFacilityRoutine(FpcBotPlayer botPlayer)
@@ -115,6 +117,8 @@ namespace SCPSLBot.AI.FirstPersonControl
             nextLockerActionTime = 0f;
             next914ActionTime = 0f;
             collectUntil = 0f;
+            transformationStartedAt = 0f;
+            expected914Generation = 0;
             used914ThisLife = false;
         }
 
@@ -193,7 +197,7 @@ namespace SCPSLBot.AI.FirstPersonControl
             }
 
             return item.Info.ItemId.ToString() is
-                "Medkit" or "SCP500" or "Adrenaline" or "Painkillers"
+                "Medkit" or "SCP500" or "Adrenaline" or "Painkillers" or "SCP207"
                 or "ArmorLight" or "ArmorCombat" or "ArmorHeavy"
                 or "GrenadeHE" or "GrenadeFlash" or "MicroHID"
                 or "GunE11SR" or "GunAK" or "GunFSP9" or "GunShotgun" or "GunLogicer";
@@ -334,6 +338,8 @@ namespace SCPSLBot.AI.FirstPersonControl
             if (running.RunningKnobSetting.HasValue)
             {
                 state = ProgressState.WaitFor914;
+                expected914Generation = running.ActivationGeneration;
+                transformationStartedAt = Time.time;
                 collectUntil = Time.time + TransformDurationSeconds + CollectionTimeoutSeconds;
                 return true;
             }
@@ -361,6 +367,8 @@ namespace SCPSLBot.AI.FirstPersonControl
             if (controls.StartKnob != null && botPlayer.Interact(controls.StartKnob))
             {
                 state = ProgressState.WaitFor914;
+                expected914Generation = Math.Max(expected914Generation + 1, running.ActivationGeneration);
+                transformationStartedAt = Time.time;
                 collectUntil = Time.time + TransformDurationSeconds + CollectionTimeoutSeconds;
             }
             else
@@ -374,7 +382,10 @@ namespace SCPSLBot.AI.FirstPersonControl
         private bool WaitFor914()
         {
             var running = botPlayer.MindRunner.GetBelief<Scp914RunningOnSetting>();
-            if (running.ItemsTransformedTime.HasValue || Time.time >= collectUntil - CollectionTimeoutSeconds)
+            var transformedThisActivation = running.ItemsTransformedTime.HasValue
+                                            && running.ItemsTransformedGeneration >= expected914Generation
+                                            && running.ItemsTransformedTime.Value >= transformationStartedAt;
+            if (transformedThisActivation || Time.time >= collectUntil - CollectionTimeoutSeconds)
             {
                 state = ProgressState.CollectFrom914;
                 return CollectFrom914();
@@ -395,6 +406,7 @@ namespace SCPSLBot.AI.FirstPersonControl
 
             var output = botPlayer.Perception.GetSense<ItemsWithinSightSense>().ItemsWithinSight
                 .Where(item => InventoryItemLoader.TryGetItem<KeycardItem>(item.Info.ItemId, out _))
+                .Where(item => Vector3.Distance(item.Position, location.OutakeChamberPosition.Value) <= 3.5f)
                 .OrderBy(item => Vector3.Distance(botPlayer.CameraPosition, item.Position))
                 .FirstOrDefault();
             if (output != null)
@@ -406,10 +418,14 @@ namespace SCPSLBot.AI.FirstPersonControl
                 }
 
                 botPlayer.LookToPosition(output.Position);
-                BotPickup.TryComplete(botPlayer.BotHub.PlayerHub, output);
-                state = ProgressState.Finished;
-                used914ThisLife = true;
-                return true;
+                if (BotPickup.TryComplete(botPlayer.BotHub.PlayerHub, output))
+                {
+                    state = ProgressState.Finished;
+                    used914ThisLife = true;
+                    return true;
+                }
+
+                return false;
             }
 
             if (Time.time >= collectUntil)

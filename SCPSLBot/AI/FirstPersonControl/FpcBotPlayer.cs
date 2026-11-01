@@ -173,6 +173,15 @@ namespace SCPSLBot.AI.FirstPersonControl
 
             if (HumanFacilityRoutine.Tick())
             {
+                if (TryHandleNavigationObstacle())
+                {
+                    DisplaySpectatorDiagnostics("facility navigation", "none");
+                }
+                else
+                {
+                    StuckRecovery.ConsumeAbandonRequest();
+                }
+
                 DisplaySpectatorDiagnostics("facility task", "none");
                 StuckRecovery.Tick(Navigator.CurrentWaypoint);
                 yield break;
