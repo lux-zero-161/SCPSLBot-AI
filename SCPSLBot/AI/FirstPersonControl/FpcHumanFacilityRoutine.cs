@@ -137,8 +137,7 @@ namespace SCPSLBot.AI.FirstPersonControl
                     }
 
                     var permissions = candidate.GetPermissions(null);
-                    if (!permissions.HasFlag(Interactables.Interobjects.DoorUtils.DoorPermissionFlags.Checkpoints)
-                        && !permissions.HasFlag(Interactables.Interobjects.DoorUtils.DoorPermissionFlags.ExitGates))
+                    if (!permissions.HasFlag(Interactables.Interobjects.DoorUtils.DoorPermissionFlags.ExitGates))
                     {
                         card = candidate;
                         return true;
@@ -157,7 +156,8 @@ namespace SCPSLBot.AI.FirstPersonControl
             var closestDistance = float.PositiveInfinity;
             foreach (var item in sense.ItemsWithinSight)
             {
-                if (!InventoryItemLoader.TryGetItem<KeycardItem>(item.Info.ItemId, out _))
+                if (!IsUsefulPickup(item)
+                    || AlreadyCarriesItem(item.Info.ItemId.ToString()))
                 {
                     continue;
                 }
@@ -183,6 +183,26 @@ namespace SCPSLBot.AI.FirstPersonControl
 
             botPlayer.LookToPosition(closest.Position);
             return BotPickup.TryComplete(botPlayer.BotHub.PlayerHub, closest);
+        }
+
+        private bool IsUsefulPickup(ItemPickupBase item)
+        {
+            if (InventoryItemLoader.TryGetItem<KeycardItem>(item.Info.ItemId, out _))
+            {
+                return true;
+            }
+
+            return item.Info.ItemId.ToString() is
+                "Medkit" or "SCP500" or "Adrenaline" or "Painkillers"
+                or "ArmorLight" or "ArmorCombat" or "ArmorHeavy"
+                or "GrenadeHE" or "GrenadeFlash" or "MicroHID"
+                or "GunE11SR" or "GunAK" or "GunFSP9" or "GunShotgun" or "GunLogicer";
+        }
+
+        private bool AlreadyCarriesItem(string itemTypeName)
+        {
+            return botPlayer.BotHub.PlayerHub.inventory.UserInventory.Items.Values
+                .Any(item => item.ItemTypeId.ToString() == itemTypeName);
         }
 
         private bool TrySearchLocker()

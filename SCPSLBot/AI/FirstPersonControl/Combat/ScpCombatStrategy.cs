@@ -55,6 +55,11 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             scp096Strategy.ClearRageTarget();
         }
 
+        public bool TryUseIdleUtility(RoleTypeId role)
+        {
+            return standardStrategy.TryUseIdleUtility(role);
+        }
+
         public void ReleaseHeldInputsIfNeeded()
         {
             scp096Strategy.ReleaseHeldRageKeyIfNeeded();

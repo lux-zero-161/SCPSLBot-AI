@@ -154,6 +154,34 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             }
         }
 
+        public bool TryUseIdleUtility(RoleTypeId role)
+        {
+            if (Time.time < nextSpecialAbilityTime)
+            {
+                return false;
+            }
+
+            var actions = role switch
+            {
+                RoleTypeId.Scp049 => Scp049SenseActions,
+                RoleTypeId.Scp106 => Scp106MovementActions,
+                RoleTypeId.Scp939 => new[]
+                {
+                    "Scp939AmnesticCloudAbility:Shoot->Click",
+                    "Scp939AmnesticCloud:Shoot->Click",
+                },
+                RoleTypeId.Scp3114 => Scp3114UtilityActions,
+                _ => Array.Empty<string>(),
+            };
+            if (actions.Length == 0 || !combat.TryClickFirstDummyAction(actions))
+            {
+                return false;
+            }
+
+            nextSpecialAbilityTime = Time.time + SpecialAbilityCooldown;
+            return true;
+        }
+
         public bool TryUseStrictAttack(RoleTypeId role, CombatTarget target, ScpCombatStrategy coordinator)
         {
             if (role is not (RoleTypeId.Scp049 or RoleTypeId.Scp0492 or RoleTypeId.Scp106))

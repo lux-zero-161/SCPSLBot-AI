@@ -1,8 +1,10 @@
 using Interactables;
 using Interactables.Interobjects;
 using Interactables.Interobjects.DoorUtils;
+using MapGeneration;
 using NetworkManagerUtils.Dummies;
 using PlayerRoles;
+using SCPSLBot.Navigation;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -20,8 +22,12 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private const float DoorCloseCooldownSeconds = 1.25f;
         private const float SearchStepSeconds = 0.9f;
         private const float SearchRadius = 2.2f;
+        private const float CoverMemorySeconds = 2f;
+        private const float CoverMinDistance = 2.5f;
+        private const float CoverMaxDistance = 10f;
 
         private static readonly int DoorMask = LayerMask.GetMask("Door");
+        private static readonly int CoverVisionMask = LayerMask.GetMask("Default", "Door", "Glass", "InteractableNoPlayerCollision");
 
         private readonly FpcBotPlayer botPlayer;
         private readonly CombatTargetSelector targetSelector;
@@ -38,9 +44,14 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private float retreatUntil;
         private float nextSearchStepTime;
         private int searchStep;
+        private float coverUntil;
+        private Vector3 coverThreatPosition;
+        private Vector3? coverPosition;
         private int strafeDirection = 1;
 
-        public static BotCombatDifficulty Difficulty { get; set; } = BotCombatDifficulty.Hardest;
+        // Normal is deliberately the default: hard modes are available through bot_difficulty,
+        // while the standard server should feel like human aim and reaction time.
+        public static BotCombatDifficulty Difficulty { get; set; } = BotCombatDifficulty.Normal;
 
         public bool DiagnosticHasTarget => targetSelector.CurrentTarget != null;
         public bool DiagnosticHasLineOfSight { get; private set; }
@@ -117,6 +128,11 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             else if (!targetSelector.TrySelectRememberedTarget(out target)
                      && !targetSelector.TrySelectSurfaceTarget(out target))
             {
+                if (botHub.roleManager.CurrentRole.Team == Team.SCPs)
+                {
+                    scpStrategy.TryUseIdleUtility(role);
+                }
+
                 targetSelector.Clear();
                 DiagnosticHasLineOfSight = false;
                 DiagnosticState = "idle";
@@ -198,6 +214,63 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             var side = Vector3.Cross(Vector3.up, away).normalized * strafeDirection * 0.3f;
             var worldMove = Vector3.Normalize(away + side);
             botPlayer.Move.DesiredLocalDirection = botPlayer.FpcRole.FpcModule.transform.InverseTransformDirection(worldMove);
+        }
+
+        internal bool TryMoveToCover(Vector3 threatPosition)
+        {
+            if (coverPosition.HasValue
+                && Time.time < coverUntil
+                && Vector3.Distance(coverThreatPosition, threatPosition) < 4f)
+            {
+                botPlayer.MoveToPosition(coverPosition.Value);
+                return true;
+            }
+
+            if (!RoomUtils.TryGetRoom(botPlayer.PlayerPosition, out var room)
+                || room == null
+                || NavigationSystem.Instance.Backend == null)
+            {
+                coverPosition = null;
+                return false;
+            }
+
+            var best = default(Vector3?);
+            var bestScore = float.PositiveInfinity;
+            var samples = NavigationSystem.Instance.Backend.GetRoomSamples(room);
+            foreach (var sample in samples)
+            {
+                var distance = Vector3.Distance(botPlayer.PlayerPosition, sample);
+                if (distance < CoverMinDistance || distance > CoverMaxDistance || !botPlayer.Navigator.CanReach(sample))
+                {
+                    continue;
+                }
+
+                var sampleEye = sample + Vector3.up * 1.1f;
+                var threatEye = threatPosition + Vector3.up * 1.1f;
+                if (!Physics.Linecast(sampleEye, threatEye, CoverVisionMask, QueryTriggerInteraction.Ignore))
+                {
+                    continue;
+                }
+
+                var score = distance + Vector3.Distance(sample, threatPosition) * 0.15f;
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = sample;
+                }
+            }
+
+            if (!best.HasValue)
+            {
+                coverPosition = null;
+                return false;
+            }
+
+            coverPosition = best;
+            coverThreatPosition = threatPosition;
+            coverUntil = Time.time + CoverMemorySeconds;
+            botPlayer.MoveToPosition(best.Value);
+            return true;
         }
 
         /// <summary>

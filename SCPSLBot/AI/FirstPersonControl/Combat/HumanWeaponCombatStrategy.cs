@@ -18,9 +18,14 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private const float ChaseDistance = 11f;
         private const float RetreatDistance = 4.5f;
         private const float MicroHidRange = 24f;
+        private const float MedicalUseHealthFraction = 0.55f;
+        private const float ThrowableMinDistance = 8f;
+        private const float ThrowableMaxDistance = 20f;
 
         private readonly FpcBotCombat combat;
         private float nextReloadAttemptTime;
+        private float nextMedicalActionTime;
+        private float nextThrowableTime;
 
         public HumanWeaponCombatStrategy(FpcBotCombat combat)
         {
@@ -38,7 +43,10 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             var closedDoor = target.HasLineOfSight && combat.TryCloseDoorBetweenBotAndTarget(target.Hub);
             if (closedDoor || combat.IsUnderPressure)
             {
-                combat.RetreatFromTarget(targetPosition);
+                if (!combat.TryMoveToCover(targetPosition))
+                {
+                    combat.RetreatFromTarget(targetPosition);
+                }
             }
             else if (target.IsInvestigating)
             {
@@ -58,12 +66,23 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             }
 
             combat.BotPlayer.LookToPosition(target.AimPoint);
+            if (TryUseMedicalItem())
+            {
+                combat.RetreatFromTarget(targetPosition);
+                return;
+            }
+
             if (closedDoor || target.IsInvestigating || !target.HasLineOfSight)
             {
                 return;
             }
 
             if (TryUseMicroHid(target))
+            {
+                return;
+            }
+
+            if (TryUseThrowable(target))
             {
                 return;
             }
@@ -138,6 +157,97 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             }
 
             return used;
+        }
+
+        private bool TryUseMedicalItem()
+        {
+            var hub = combat.BotPlayer.BotHub.PlayerHub;
+            var health = hub.playerStats.GetModule<HealthStat>();
+            if (health == null || health.MaxValue <= 0f || health.CurValue / health.MaxValue > MedicalUseHealthFraction)
+            {
+                return false;
+            }
+
+            var inventory = hub.inventory;
+            var preferredItems = new[]
+            {
+                ItemType.Medkit,
+                ItemType.SCP500,
+                ItemType.Adrenaline,
+                ItemType.Painkillers,
+            };
+            ItemBase medicalItem = null;
+            foreach (var itemType in preferredItems)
+            {
+                medicalItem = inventory.UserInventory.Items.Values.FirstOrDefault(item => item.ItemTypeId == itemType);
+                if (medicalItem != null)
+                {
+                    break;
+                }
+            }
+
+            if (medicalItem == null)
+            {
+                return false;
+            }
+
+            if (inventory.CurInstance != medicalItem)
+            {
+                inventory.ServerSelectItem(medicalItem.ItemSerial);
+                return true;
+            }
+
+            if (Time.time < nextMedicalActionTime)
+            {
+                return true;
+            }
+
+            nextMedicalActionTime = Time.time + 0.75f;
+            var itemName = medicalItem.ItemTypeId.ToString();
+            return combat.TryClickFirstDummyAction(
+                $"{itemName}:Use->Click",
+                $"{itemName}:Activate->Click",
+                $"{itemName}:Shoot->Click",
+                "Use->Click");
+        }
+
+        private bool TryUseThrowable(CombatTarget target)
+        {
+            if (target.Distance < ThrowableMinDistance
+                || target.Distance > ThrowableMaxDistance
+                || Time.time < nextThrowableTime)
+            {
+                return false;
+            }
+
+            var inventory = combat.BotPlayer.BotHub.PlayerHub.inventory;
+            var grenade = inventory.UserInventory.Items.Values.FirstOrDefault(item =>
+                item.ItemTypeId is ItemType.GrenadeHE or ItemType.GrenadeFlash);
+            if (grenade == null)
+            {
+                return false;
+            }
+
+            if (inventory.CurInstance != grenade)
+            {
+                inventory.ServerSelectItem(grenade.ItemSerial);
+                return true;
+            }
+
+            var itemName = grenade.ItemTypeId.ToString();
+            var used = combat.TryClickFirstDummyAction(
+                $"{itemName}:Throw->Click",
+                $"{itemName}:Shoot->Click",
+                $"{itemName}:Use->Click",
+                "Throw->Click");
+            if (!used)
+            {
+                return false;
+            }
+
+            nextThrowableTime = Time.time + 8f;
+            BotManager.Instance.NotifyCombatSound(combat.BotPlayer.BotHub.PlayerHub);
+            return true;
         }
 
         private Firearm EnsureFirearmEquipped()
