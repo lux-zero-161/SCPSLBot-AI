@@ -17,6 +17,11 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
     internal sealed class FpcBotCombat
     {
         private const float DoorInteractDistance = 2f;
+        private const float DoorCloseCooldownSeconds = 1.25f;
+        private const float SearchStepSeconds = 0.9f;
+        private const float SearchRadius = 2.2f;
+
+        private static readonly int DoorMask = LayerMask.GetMask("Door");
 
         private readonly FpcBotPlayer botPlayer;
         private readonly CombatTargetSelector targetSelector;
@@ -29,6 +34,10 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private float nextStrafeFlipTime;
         private float nextShotTime;
         private float nextSurfaceDoorDebugLogTime;
+        private float nextDoorActionTime;
+        private float retreatUntil;
+        private float nextSearchStepTime;
+        private int searchStep;
         private int strafeDirection = 1;
 
         public static BotCombatDifficulty Difficulty { get; set; } = BotCombatDifficulty.Hardest;
@@ -47,6 +56,8 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             get => nextShotTime;
             set => nextShotTime = value;
         }
+
+        internal bool IsUnderPressure => Time.time < retreatUntil;
 
         internal static BotCombatDifficultySettings CurrentSettings => BotCombatDifficultySettings.For(Difficulty);
 
@@ -67,6 +78,18 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
             scpStrategy.NotifyDamaged();
             nextStrafeFlipTime = 0f;
+            retreatUntil = Time.time + 2.5f;
+            searchStep = 0;
+            nextSearchStepTime = 0f;
+        }
+
+        public void NotifyHeard(ReferenceHub source, Vector3 soundPosition)
+        {
+            if (targetSelector.NotifyHeard(source, soundPosition))
+            {
+                searchStep = 0;
+                nextSearchStepTime = 0f;
+            }
         }
 
         public bool Tick()
@@ -148,6 +171,110 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         {
             botPlayer.MoveToPosition(targetPosition);
             OpenBlockingDoorOnCombatPath();
+        }
+
+        internal Vector3 GetInvestigationPosition(Vector3 lastKnownPosition)
+        {
+            if (Time.time >= nextSearchStepTime)
+            {
+                nextSearchStepTime = Time.time + SearchStepSeconds;
+                searchStep++;
+            }
+
+            var angle = (searchStep % 8) * Mathf.PI * 0.25f;
+            var candidate = lastKnownPosition + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * SearchRadius;
+            return botPlayer.Navigator.CanReach(candidate) ? candidate : lastKnownPosition;
+        }
+
+        internal void RetreatFromTarget(Vector3 targetPosition)
+        {
+            var away = Vector3.ProjectOnPlane(botPlayer.PlayerPosition - targetPosition, Vector3.up);
+            if (away.sqrMagnitude < 0.01f)
+            {
+                away = -Vector3.ProjectOnPlane(botPlayer.PlayerForward, Vector3.up);
+            }
+
+            away.Normalize();
+            var side = Vector3.Cross(Vector3.up, away).normalized * strafeDirection * 0.3f;
+            var worldMove = Vector3.Normalize(away + side);
+            botPlayer.Move.DesiredLocalDirection = botPlayer.FpcRole.FpcModule.transform.InverseTransformDirection(worldMove);
+        }
+
+        /// <summary>
+        /// Human players often close a door after spotting a pursuer. Only close a door that is
+        /// actually between the bot and its target, and rate-limit the interaction so an open /
+        /// close race cannot happen while both players are in the doorway.
+        /// </summary>
+        internal bool TryCloseDoorBetweenBotAndTarget(ReferenceHub target)
+        {
+            if (target == null || Time.time < nextDoorActionTime)
+            {
+                return false;
+            }
+
+            var botPosition = botPlayer.PlayerPosition + Vector3.up;
+            var targetPosition = target.transform.position + Vector3.up;
+            var direction = targetPosition - botPosition;
+            var distance = direction.magnitude;
+            if (distance < 3f)
+            {
+                return false;
+            }
+
+            foreach (var hit in Physics.RaycastAll(botPosition, direction / distance, distance, DoorMask, QueryTriggerInteraction.Ignore))
+            {
+                var door = hit.collider.GetComponentInParent<DoorVariant>();
+                if (TryCloseDoor(door, targetPosition))
+                {
+                    return true;
+                }
+            }
+
+            // An open leaf can be outside the straight ray after it swung aside. The perception
+            // sense still knows the nearby door, so use its plane as a second, conservative test.
+            var doors = botPlayer.Perception.DoorsSense?.DoorsWithinSight;
+            if (doors != null)
+            {
+                foreach (var door in doors)
+                {
+                    if (TryCloseDoor(door, targetPosition))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool TryCloseDoor(DoorVariant door, Vector3 targetPosition)
+        {
+            if (door == null
+                || !door.IsConsideredOpen()
+                || door is DummyDoor
+                || door is ElevatorDoor
+                || door is BasicNonInteractableDoor)
+            {
+                return false;
+            }
+
+            var doorPosition = door.transform.position + Vector3.up;
+            var botSide = Vector3.Dot(door.transform.forward, botPlayer.PlayerPosition - door.transform.position);
+            var targetSide = Vector3.Dot(door.transform.forward, targetPosition - door.transform.position);
+            if (botSide * targetSide >= 0f
+                || Vector3.Distance(botPlayer.PlayerPosition, doorPosition) > DoorInteractDistance + 0.9f
+                || Vector3.Distance(targetPosition, doorPosition) < 2.75f)
+            {
+                return false;
+            }
+
+            if (!botPlayer.InteractDoorDirectly(door, DoorInteractDistance + 0.9f))
+            {
+                return false;
+            }
+
+            nextDoorActionTime = Time.time + DoorCloseCooldownSeconds;
+            return true;
         }
 
         private void OpenBlockingDoorOnCombatPath()

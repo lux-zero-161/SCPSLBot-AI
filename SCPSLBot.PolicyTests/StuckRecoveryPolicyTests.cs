@@ -69,6 +69,20 @@ public sealed class StuckRecoveryPolicyTests
     }
 
     [Fact]
+    public void StuckBotDoesNotRepeatJumpAtTheSameSpot()
+    {
+        var policy = new StuckRecoveryPolicy();
+        policy.Tick(0f, true, 0f, 0f, 5f, false);
+
+        var firstJump = policy.Tick(1.6f, true, 0f, 0f, 5f, false);
+        Assert.True(firstJump.HasFlag(StuckRecoveryActions.Jump));
+
+        var later = policy.Tick(2.6f, true, 0f, 0f, 5f, false);
+        Assert.False(later.HasFlag(StuckRecoveryActions.Jump));
+        Assert.True(later.HasFlag(StuckRecoveryActions.Replan));
+    }
+
+    [Fact]
     public void SmallGainsDuringRecoveryDoNotResetTheLadder()
     {
         var policy = new StuckRecoveryPolicy();

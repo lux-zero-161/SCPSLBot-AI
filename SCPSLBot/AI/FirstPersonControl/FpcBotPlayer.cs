@@ -1,12 +1,16 @@
 using Interactables;
 using Interactables.Interobjects;
 using Interactables.Interobjects.DoorUtils;
+using InventorySystem.Items;
+using InventorySystem.Items.Keycards;
 using MapGeneration;
 using MapGeneration.Distributors;
 using PlayerRoles;
 using PlayerRoles.FirstPersonControl;
 using PlayerRoles.Spectating;
 using SCPSLBot.AI.FirstPersonControl.Combat;
+using SCPSLBot.AI.FirstPersonControl.Mind.Door;
+using SCPSLBot.AI.FirstPersonControl.Mind.Elevation;
 using SCPSLBot.AI.FirstPersonControl.Looking;
 using SCPSLBot.AI.FirstPersonControl.Mind;
 using SCPSLBot.AI.FirstPersonControl.Movement;
@@ -40,6 +44,7 @@ namespace SCPSLBot.AI.FirstPersonControl
 
         public FpcBotCombat Combat { get; }
         public FpcZoneRoam ZoneRoam { get; }
+        public FpcHumanFacilityRoutine HumanFacilityRoutine { get; }
         public IBotNavigator Navigator { get; }
 
         public FpcLook Look { get; }
@@ -66,6 +71,7 @@ namespace SCPSLBot.AI.FirstPersonControl
 
                 Combat = new(this);
                 ZoneRoam = new(this);
+                HumanFacilityRoutine = new(this);
                 Navigator = NavigationSystem.Instance.CreateNavigator(this);
                 Look = new(this);
                 Move = new(this);
@@ -165,39 +171,40 @@ namespace SCPSLBot.AI.FirstPersonControl
                 }
             }
 
-            if (ShouldIdleOnSurfaceWithoutTarget())
+            if (HumanFacilityRoutine.Tick())
             {
-                Move.DesiredLocalDirection = Vector3.zero;
-                StuckRecovery.Reset();
-                DisplaySpectatorDiagnostics("surface idle", "none");
-                yield break;
-            }
-
-            if (!ShouldUseEscapeGoal())
-            {
-                if (!ZoneRoam.Tick())
-                {
-                    MindRunner.Tick();
-                    DisplaySpectatorDiagnostics();
-                }
-
+                DisplaySpectatorDiagnostics("facility task", "none");
                 StuckRecovery.Tick(Navigator.CurrentWaypoint);
                 yield break;
             }
 
-            MindRunner.Tick();
+            if (ShouldUseEscapeGoal())
+            {
+                MindRunner.Tick();
+            }
+            else
+            {
+                // Escape planning belongs only to Class-D and Scientists. Other human roles still
+                // roam and use the same navigation interaction layer, but must not walk to Surface.
+                MindRunner.Stop();
+            }
 
-            // If the planner has nothing to do (e.g. no reachable escape route sensed yet), roam
-            // instead of standing still for the rest of the round.
-            if (MindRunner.RunningAction == null)
+            // Goal-driven actions already set movement. If no goal is active, keep exploring
+            // instead of standing in one room; this also applies on the Surface.
+            if (!ShouldUseEscapeGoal() || MindRunner.RunningAction == null)
             {
                 ZoneRoam.Tick();
             }
             else
             {
-                // Goal-driven actions re-plan through beliefs; a stuck ladder abandon only matters
-                // to the roam fallback, so keep the flag from lingering into a later roam tick.
                 StuckRecovery.ConsumeAbandonRequest();
+            }
+
+            if (TryHandleNavigationObstacle())
+            {
+                DisplaySpectatorDiagnostics("navigation interaction", "none");
+                StuckRecovery.Tick(Navigator.CurrentWaypoint);
+                yield break;
             }
 
             DisplaySpectatorDiagnostics();
@@ -210,11 +217,6 @@ namespace SCPSLBot.AI.FirstPersonControl
         {
             var role = BotHub.PlayerHub.roleManager.CurrentRole.RoleTypeId;
             return role is RoleTypeId.ClassD or RoleTypeId.Scientist;
-        }
-
-        private bool ShouldIdleOnSurfaceWithoutTarget()
-        {
-            return RoomUtils.TryGetRoom(PlayerPosition, out var room) && room.Zone == FacilityZone.Surface;
         }
 
         public void OnRoleChanged()
@@ -230,8 +232,209 @@ namespace SCPSLBot.AI.FirstPersonControl
             PerceptionComponent.enabled = true;
 
             nextPerceptionUpdateTime = Time.time;
-            MindRunner.EvaluateGoalsToActions();
+            HumanFacilityRoutine.Reset();
+            if (ShouldUseEscapeGoal())
+            {
+                MindRunner.EvaluateGoalsToActions();
+            }
+            else
+            {
+                MindRunner.Stop();
+            }
             StuckRecovery.Reset();
+        }
+
+        public void NotifyHeard(ReferenceHub source, Vector3 soundPosition)
+        {
+            Combat.NotifyHeard(source, soundPosition);
+        }
+
+        private bool TryHandleNavigationObstacle()
+        {
+            if (!Navigator.HasPath && !Navigator.HasPartialPath)
+            {
+                return false;
+            }
+
+            if (TryHandleElevatorObstacle())
+            {
+                return true;
+            }
+
+            var doorObstacle = MindRunner.GetBelief<DoorObstacle>();
+            if (!doorObstacle.IsAny)
+            {
+                return false;
+            }
+
+            var door = doorObstacle.GetLastDoor(
+                entry => CanUseDoorPermission(entry.DoorPermissions),
+                out var goalPosition);
+            if (door == null)
+            {
+                return false;
+            }
+
+            if (door is BasicNonInteractableDoor && !door.TargetState)
+            {
+                // SCP-914 and a few checkpoint mechanisms open from native proximity/state
+                // changes, not from a player panel. Approach the threshold and wait without
+                // feeding a permanent movement intent into stuck recovery.
+                if (Vector3.Distance(PlayerPosition, door.transform.position) > 1.4f)
+                {
+                    MoveToPosition(door.transform.position);
+                }
+                else
+                {
+                    Move.DesiredLocalDirection = Vector3.zero;
+                    LookToPosition(door.transform.position + Vector3.up);
+                }
+
+                return true;
+            }
+
+            var distance = Vector3.Distance(PlayerPosition, door.transform.position);
+            if (!door.TargetState && distance <= 2.25f)
+            {
+                if (!OpenDoor(door, 2.25f)
+                    && !InteractDoorDirectly(door, 2.25f))
+                {
+                    LookToPosition(door.transform.position + Vector3.up);
+                }
+            }
+
+            if (!door.TargetState || distance > 2.25f)
+            {
+                MoveToPosition(goalPosition);
+            }
+
+            return true;
+        }
+
+        private bool CanUseDoorPermission(DoorPermissionFlags requiredPermissions)
+        {
+            if (requiredPermissions == DoorPermissionFlags.None)
+            {
+                return true;
+            }
+
+            var hub = BotHub.PlayerHub;
+            if (hub.roleManager.CurrentRole is IDoorPermissionProvider roleProvider
+                && roleProvider.GetPermissions(null).HasFlag(requiredPermissions))
+            {
+                return true;
+            }
+
+            var items = hub.inventory?.UserInventory?.Items;
+            if (items == null)
+            {
+                return false;
+            }
+
+            foreach (var item in items.Values)
+            {
+                if (item is not KeycardItem keycard
+                    || !keycard.GetPermissions(null).HasFlag(requiredPermissions))
+                {
+                    continue;
+                }
+
+                if (hub.inventory.CurInstance != item)
+                {
+                    hub.inventory.ServerSelectItem(item.ItemSerial);
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryHandleElevatorObstacle()
+        {
+            var obstacle = MindRunner.GetBelief<ElevationObstacle>();
+            if (!obstacle.GoalPosition.HasValue)
+            {
+                return false;
+            }
+
+            var goalPosition = obstacle.GoalPosition.Value;
+            if (obstacle.ElevatorAtOrigin != null)
+            {
+                var elevator = obstacle.ElevatorAtOrigin;
+                var elevatorMiddle = elevator.WorldspaceBounds.Origin with { y = PlayerPosition.y };
+                if (Vector3.Distance(PlayerPosition, elevatorMiddle) > 0.35f)
+                {
+                    MoveToPosition(elevatorMiddle);
+                    return true;
+                }
+
+                var panel = elevator.GetComponentInChildren<ElevatorPanel>();
+                if (panel == null)
+                {
+                    return true;
+                }
+
+                var panelPosition = panel.GetComponent<Collider>().bounds.center;
+                if (!elevator.IsReady)
+                {
+                    LookToPosition(panelPosition);
+                    return true;
+                }
+
+                if (!Combat.IsAimedAt(panelPosition, 14f))
+                {
+                    LookToPosition(panelPosition);
+                    return true;
+                }
+
+                elevator.ServerSetDestination(elevator.NextLevel, true);
+                return true;
+            }
+
+            var elevatorChamber = obstacle.Elevator;
+            if (elevatorChamber == null)
+            {
+                return false;
+            }
+
+            var destinationDoor = elevatorChamber.DestinationDoor;
+            var nextDestinationDoor = elevatorChamber.NextDestinationDoor;
+            var destinationDistance = destinationDoor != null
+                ? Vector3.Distance(PlayerPosition, destinationDoor.transform.position)
+                : float.PositiveInfinity;
+            var nextDistance = nextDestinationDoor != null
+                ? Vector3.Distance(PlayerPosition, nextDestinationDoor.transform.position)
+                : float.PositiveInfinity;
+            var elevatorDoor = destinationDistance <= nextDistance ? destinationDoor : nextDestinationDoor;
+            if (elevatorDoor == null)
+            {
+                return false;
+            }
+
+            if (elevatorDoor == destinationDoor && elevatorChamber.IsReady)
+            {
+                MoveToPosition(goalPosition);
+                return true;
+            }
+
+            var panelForDoor = elevatorDoor.GetComponentInChildren<ElevatorPanel>();
+            if (panelForDoor == null)
+            {
+                MoveToPosition(goalPosition);
+                return true;
+            }
+
+            var panelForDoorPosition = panelForDoor.GetComponent<Collider>().bounds.center;
+            if (Vector3.Distance(PlayerPosition, panelForDoorPosition) > 2f)
+            {
+                MoveToPosition(panelForDoorPosition);
+                LookToPosition(panelForDoorPosition);
+                return true;
+            }
+
+            elevatorDoor.ServerInteract(BotHub.PlayerHub, panelForDoor.ColliderId);
+            return true;
         }
 
         #region Moving
@@ -269,6 +472,23 @@ namespace SCPSLBot.AI.FirstPersonControl
         {
             var relativePos = positionTowardsGoal - this.FpcRole.CameraPosition;
             var relativeHorizontalPos = Vector3.ProjectOnPlane(relativePos, Vector3.up);
+            if (relativeHorizontalPos.sqrMagnitude < 0.04f && Mathf.Abs(relativePos.y) > 0.25f)
+            {
+                // Stair landings can produce two neighbouring path points with almost identical
+                // X/Z coordinates but different floor heights. Native FPC climbs when it receives
+                // the horizontal run-up, so use the next path segment instead of waiting below the
+                // upper point or triggering the jump recovery ladder.
+                foreach (var (point, nextPoint) in Navigator.PathSegments)
+                {
+                    var stairRun = Vector3.ProjectOnPlane(nextPoint - point, Vector3.up);
+                    if (stairRun.sqrMagnitude > 0.16f
+                        && Vector3.Distance(Vector3.ProjectOnPlane(PlayerPosition, Vector3.up), Vector3.ProjectOnPlane(point, Vector3.up)) < 2.5f)
+                    {
+                        relativeHorizontalPos = stairRun.normalized;
+                        break;
+                    }
+                }
+            }
             var turnPosition = relativeHorizontalPos + this.FpcRole.CameraPosition;
 
             this.Look.ToPosition(turnPosition);

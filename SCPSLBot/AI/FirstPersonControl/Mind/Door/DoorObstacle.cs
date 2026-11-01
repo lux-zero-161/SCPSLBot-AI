@@ -38,12 +38,10 @@ namespace SCPSLBot.AI.FirstPersonControl.Mind.Door
     internal class DoorObstacle : Belief<DoorEntry?>
     {
         private readonly IBotNavigator navigator;
-        private readonly SightSense sightSense;
 
         public DoorObstacle(SightSense sightSense, IBotNavigator navigator)
         {
             this.navigator = navigator;
-            this.sightSense = sightSense;
 
             sightSense.OnAfterSightSensing += OnAfterSightSensing;
         }
@@ -58,16 +56,6 @@ namespace SCPSLBot.AI.FirstPersonControl.Mind.Door
 
             foreach (var (point, nextPoint) in navigator.PathSegments)
             {
-                if (!sightSense.IsPositionWithinFov(nextPoint))
-                {
-                    continue;
-                }
-
-                if (sightSense.IsPositionObstructed(point))
-                {
-                    continue;
-                }
-
                 if (!Physics.Linecast(point, nextPoint, out var hit, LayerMask.GetMask("Door")))
                 {
                     continue;

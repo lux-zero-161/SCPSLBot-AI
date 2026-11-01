@@ -443,9 +443,47 @@ namespace SCPSLBot.AI
                 return;
             }
 
+            // Treat the attacker as the origin of the audible shot/melee cue. The hit victim is
+            // still useful for damage response, but searching from the victim would make a bot
+            // investigate the wrong side of a corridor after a ranged hit.
+            var soundPosition = ev.Attacker.ReferenceHub.transform.position;
             if (BotPlayers.TryGetValue(ev.Player.ReferenceHub, out var botPlayer))
             {
                 botPlayer.NotifyHurt(ev.Attacker.ReferenceHub);
+            }
+
+            // A nearby hit is an observable sound cue even when the attacker is behind a wall.
+            // Bots receive only a short-lived position, never the attacker's live transform, so
+            // investigation cannot turn into wall-hacking pursuit.
+            foreach (var (listenerHub, listener) in BotPlayers)
+            {
+                if (listenerHub == null
+                    || listenerHub == ev.Player.ReferenceHub
+                    || Vector3.Distance(listenerHub.transform.position, soundPosition) > 42f)
+                {
+                    continue;
+                }
+
+                listener.FpcPlayer.NotifyHeard(ev.Attacker.ReferenceHub, soundPosition);
+            }
+        }
+
+        public void NotifyCombatSound(ReferenceHub source)
+        {
+            if (source == null)
+            {
+                return;
+            }
+
+            var soundPosition = source.transform.position;
+            foreach (var (listenerHub, listener) in BotPlayers)
+            {
+                if (listenerHub == null || listenerHub == source)
+                {
+                    continue;
+                }
+
+                listener.FpcPlayer.NotifyHeard(source, soundPosition);
             }
         }
 

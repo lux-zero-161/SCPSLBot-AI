@@ -22,11 +22,12 @@ namespace SCPSLBot.AI.FirstPersonControl.Perception.Senses
         public void ProcessSensedItems()
         {
             var userInventory = _fpcBotPlayer.BotHub.PlayerHub.inventory.UserInventory;
+            HasFirearmInInventory = false;
             foreach (var item in userInventory.Items.Values)
             {
                 OnSensedItem?.Invoke(item);
 
-                HasFirearmInInventory = item is Firearm;
+                HasFirearmInInventory |= item is Firearm;
             }
             OnAfterSensedItems?.Invoke();
         }

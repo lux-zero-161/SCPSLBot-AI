@@ -4,6 +4,7 @@ using InventorySystem.Items.Firearms;
 using InventorySystem.Items.Firearms.Modules;
 using InventorySystem.Items.Firearms.ShotEvents;
 using PlayerStatsSystem;
+using SCPSLBot.AI;
 using System.Linq;
 using UnityEngine;
 
@@ -16,6 +17,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
     {
         private const float ChaseDistance = 11f;
         private const float RetreatDistance = 4.5f;
+        private const float MicroHidRange = 24f;
 
         private readonly FpcBotCombat combat;
         private float nextReloadAttemptTime;
@@ -27,20 +29,46 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
         public void Run(CombatTarget target)
         {
-            var firearm = EnsureFirearmEquipped();
-            var targetPosition = target.Hub.transform.position;
-            var surfaceDoorBlockingTarget = combat.OpenSurfaceDoorTowardTarget(target.Hub);
+            var targetPosition = target.Position;
+            if (!target.HasLineOfSight && target.IsInvestigating)
+            {
+                targetPosition = combat.GetInvestigationPosition(target.Position);
+            }
 
-            if (surfaceDoorBlockingTarget || target.Distance > ChaseDistance)
+            var closedDoor = target.HasLineOfSight && combat.TryCloseDoorBetweenBotAndTarget(target.Hub);
+            if (closedDoor || combat.IsUnderPressure)
+            {
+                combat.RetreatFromTarget(targetPosition);
+            }
+            else if (target.IsInvestigating)
             {
                 combat.MoveToCombatPosition(targetPosition);
             }
             else
             {
-                combat.StrafeAroundTarget(targetPosition, target.Distance, RetreatDistance, ChaseDistance);
+                var surfaceDoorBlockingTarget = combat.OpenSurfaceDoorTowardTarget(target.Hub);
+                if (surfaceDoorBlockingTarget || target.Distance > ChaseDistance)
+                {
+                    combat.MoveToCombatPosition(targetPosition);
+                }
+                else
+                {
+                    combat.StrafeAroundTarget(targetPosition, target.Distance, RetreatDistance, ChaseDistance);
+                }
             }
 
             combat.BotPlayer.LookToPosition(target.AimPoint);
+            if (closedDoor || target.IsInvestigating || !target.HasLineOfSight)
+            {
+                return;
+            }
+
+            if (TryUseMicroHid(target))
+            {
+                return;
+            }
+
+            var firearm = EnsureFirearmEquipped();
             if (!target.HasLineOfSight || firearm == null || Time.time < combat.NextShotTime)
             {
                 return;
@@ -69,6 +97,47 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             {
                 FireDirectly(firearm, target.Hub);
             }
+
+            BotManager.Instance.NotifyCombatSound(combat.BotPlayer.BotHub.PlayerHub);
+        }
+
+        private bool TryUseMicroHid(CombatTarget target)
+        {
+            if (target.Distance > MicroHidRange)
+            {
+                return false;
+            }
+
+            var inventory = combat.BotPlayer.BotHub.PlayerHub.inventory;
+            var microHid = inventory.UserInventory.Items.Values.FirstOrDefault(item => item.ItemTypeId == ItemType.MicroHID);
+            if (microHid == null)
+            {
+                return false;
+            }
+
+            if (inventory.CurInstance != microHid)
+            {
+                inventory.ServerSelectItem(microHid.ItemSerial);
+                return true;
+            }
+
+            var settings = FpcBotCombat.CurrentSettings;
+            if (!combat.IsAimedAt(target.AimPoint, settings.AimAngleDegrees + 5f))
+            {
+                return true;
+            }
+
+            var used = combat.TryClickFirstDummyAction(
+                "MicroHID:Shoot->Click",
+                "MicroHID:Fire->Click",
+                "MicroHID:Shoot->Hold",
+                "MicroHID:Fire->Hold");
+            if (used)
+            {
+                BotManager.Instance.NotifyCombatSound(combat.BotPlayer.BotHub.PlayerHub);
+            }
+
+            return used;
         }
 
         private Firearm EnsureFirearmEquipped()

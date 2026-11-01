@@ -3,6 +3,7 @@ using MapGeneration;
 using SCPSLBot.AI.FirstPersonControl.Mind.Door;
 using SCPSLBot.AI.FirstPersonControl.Perception.Senses;
 using SCPSLBot.Navigation;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -14,10 +15,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
         private const float TargetReachedDistance = 1.75f;
         private const float SameRoomTargetMinDistance = 5f;
         private const float DoorInteractDistance = 2f;
+        private const float RecentTargetRadius = 3.5f;
+        private const int RecentTargetLimit = 8;
 
         private readonly FpcBotPlayer botPlayer;
         private readonly System.Random random = new();
         private readonly List<Vector3> candidates = new();
+        private readonly List<Vector3> recentTargets = new();
 
         private Vector3? targetPosition;
         private FacilityZone? targetZone;
@@ -140,23 +144,62 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
             targetZone = roomWithin.Zone;
         }
 
-        // A few random draws, the first one the bot can actually reach wins (a target behind a
-        // keycard door it cannot open would only end in the stuck ladder). Falls back to the last
-        // draw so the bot always has somewhere to go.
+        // Prefer a reachable point that has not just been visited. A purely random picker often
+        // selects the same room sample again, which makes a bot appear to jump or turn in place.
         private Vector3 PickReachable()
         {
             var selected = candidates[random.Next(candidates.Count)];
-            for (var attempt = 0; attempt < 4; attempt++)
+            var fallback = selected;
+            var foundFresh = false;
+            for (var attempt = 0; attempt < Math.Min(candidates.Count, 12); attempt++)
             {
-                if (botPlayer.Navigator.CanReach(selected))
+                var candidate = candidates[random.Next(candidates.Count)];
+                if (!botPlayer.Navigator.CanReach(candidate))
                 {
-                    return selected;
+                    continue;
                 }
 
-                selected = candidates[random.Next(candidates.Count)];
+                fallback = candidate;
+                if (IsRecentTarget(candidate))
+                {
+                    continue;
+                }
+
+                selected = candidate;
+                foundFresh = true;
+                break;
             }
 
+            if (!foundFresh)
+            {
+                selected = fallback;
+            }
+
+            RememberTarget(selected);
             return selected;
+        }
+
+        private bool IsRecentTarget(Vector3 candidate)
+        {
+            foreach (var recent in recentTargets)
+            {
+                if (Vector3.SqrMagnitude(candidate - recent) <= RecentTargetRadius * RecentTargetRadius)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void RememberTarget(Vector3 target)
+        {
+            recentTargets.RemoveAll(previous => Vector3.SqrMagnitude(previous - target) <= RecentTargetRadius * RecentTargetRadius);
+            recentTargets.Add(target);
+            if (recentTargets.Count > RecentTargetLimit)
+            {
+                recentTargets.RemoveAt(0);
+            }
         }
 
         private bool TickWithoutRoom()

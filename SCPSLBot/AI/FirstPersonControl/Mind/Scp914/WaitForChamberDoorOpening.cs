@@ -29,7 +29,27 @@ namespace SCPSLBot.AI.FirstPersonControl.Mind.Scp914
 
         public void Tick()
         {
-            // TODO: door waiting idle logic
+            var chamberDoor = doorObstacleBelief.GetLastDoor(entry => entry.IsScp914ChamberDoor(), out var goalPosition);
+            if (chamberDoor == null)
+            {
+                return;
+            }
+
+            if (chamberDoor.TargetState)
+            {
+                botPlayer.MoveToPosition(goalPosition);
+                return;
+            }
+
+            if (Vector3.Distance(botPlayer.PlayerPosition, chamberDoor.transform.position) > 1.4f)
+            {
+                botPlayer.MoveToPosition(chamberDoor.transform.position);
+            }
+            else
+            {
+                botPlayer.Move.DesiredLocalDirection = Vector3.zero;
+                botPlayer.LookToPosition(chamberDoor.transform.position + Vector3.up);
+            }
         }
 
         public void Reset()

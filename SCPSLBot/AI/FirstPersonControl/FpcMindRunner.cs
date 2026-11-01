@@ -95,6 +95,19 @@ namespace SCPSLBot.AI.FirstPersonControl
             }
         }
 
+        public void Stop()
+        {
+            if (isDisposed)
+            {
+                return;
+            }
+
+            RunningAction = null;
+            RunningActionCost = 0f;
+            RelevantBeliefs.Clear();
+            isBeliefsUpdated = false;
+        }
+
         public void Tick()
         {
             if (isDisposed)

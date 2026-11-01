@@ -56,6 +56,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Movement
         private float replanSpotX;
         private float replanSpotZ;
         private int replansAtSpot;
+        private int jumpsAtSpot;
         private int lastProgressStamp;
 
         public int NudgeSign { get; private set; } = 1;
@@ -73,6 +74,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Movement
             StuckSeconds = 0f;
             backOffUntil = 0f;
             backOffIssued = false;
+            jumpsAtSpot = 0;
         }
 
         /// <summary>Forget the replan counter (a new goal or an accepted crossing change).</summary>
@@ -128,6 +130,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Movement
                 StuckSeconds = 0f;
                 backOffUntil = 0f;
                 backOffIssued = false;
+                jumpsAtSpot = 0;
                 return StuckRecoveryActions.None;
             }
 
@@ -152,9 +155,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Movement
 
             actions |= StuckRecoveryActions.Nudge;
 
-            if (StuckSeconds >= JumpAfterSeconds && now >= nextJumpAt)
+            // A jump is an escape hatch for a small lip, not a movement strategy. Repeating it at
+            // the same coordinates only makes a bot bunny-hop in place; back-off and re-planning
+            // are the useful next steps when the first jump did not create progress.
+            if (StuckSeconds >= JumpAfterSeconds && now >= nextJumpAt && jumpsAtSpot == 0)
             {
                 nextJumpAt = now + JumpIntervalSeconds;
+                jumpsAtSpot++;
                 actions |= StuckRecoveryActions.Jump;
             }
 

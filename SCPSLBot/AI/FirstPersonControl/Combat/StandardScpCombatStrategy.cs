@@ -16,6 +16,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private const float Scp106AttackRange = 4f;
         private const float StrictAttackAimAngle = 14f;
         private const float Scp049SenseCooldown = 4f;
+        private const float SpecialAbilityCooldown = 2.5f;
 
         private static readonly string[] Scp939AttackActions =
         {
@@ -25,6 +26,32 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private static readonly string[] Scp106AttackActions =
         {
             "Scp106Attack:Shoot->Click",
+        };
+
+        private static readonly string[] Scp106MovementActions =
+        {
+            "Scp106StalkAbility:Shoot->Click",
+            "Scp106Stalk:Shoot->Click",
+            "Scp106SinkholeAbility:Shoot->Click",
+            "Scp106Sinkhole:Shoot->Click",
+            "Scp106TeleportAbility:Shoot->Click",
+            "Scp106Teleport:Shoot->Click",
+            "Scp106PortalAbility:Shoot->Click",
+            "Scp106Portal:Shoot->Click",
+        };
+
+        private static readonly string[] Scp939UtilityActions =
+        {
+            "Scp939LungeAbility:Shoot->Click",
+            "Scp939Lunge:Shoot->Click",
+            "Scp939AmnesticCloudAbility:Shoot->Click",
+            "Scp939AmnesticCloud:Shoot->Click",
+        };
+
+        private static readonly string[] Scp3114UtilityActions =
+        {
+            "Scp3114DisguiseAbility:Shoot->Click",
+            "Scp3114Disguise:Shoot->Click",
         };
 
         private static readonly string[] Scp3114AttackActions =
@@ -56,6 +83,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private readonly FpcBotCombat combat;
         private readonly Scp096CombatStrategy scp096Strategy;
         private float nextScp049SenseTime;
+        private float nextSpecialAbilityTime;
 
         public StandardScpCombatStrategy(FpcBotCombat combat, Scp096CombatStrategy scp096Strategy)
         {
@@ -74,16 +102,55 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             };
         }
 
-        public void TryUseChaseAbility(RoleTypeId role)
+        public void TryUseChaseAbility(RoleTypeId role, CombatTarget target)
         {
-            if (role != RoleTypeId.Scp049 || Time.time < nextScp049SenseTime)
+            if (target == null)
             {
                 return;
             }
 
-            if (combat.TryClickFirstDummyAction(Scp049SenseActions))
+            if (role == RoleTypeId.Scp049)
             {
-                nextScp049SenseTime = Time.time + Scp049SenseCooldown;
+                if (Time.time < nextScp049SenseTime)
+                {
+                    return;
+                }
+
+                if (combat.TryClickFirstDummyAction(Scp049SenseActions))
+                {
+                    nextScp049SenseTime = Time.time + Scp049SenseCooldown;
+                }
+
+                return;
+            }
+
+            if (Time.time < nextSpecialAbilityTime)
+            {
+                return;
+            }
+
+            var shouldUse = role switch
+            {
+                RoleTypeId.Scp106 => target.Distance > 6f || !target.HasLineOfSight,
+                RoleTypeId.Scp939 => target.Distance > 5f,
+                RoleTypeId.Scp3114 => target.Distance > 8f,
+                _ => false,
+            };
+            if (!shouldUse)
+            {
+                return;
+            }
+
+            var actions = role switch
+            {
+                RoleTypeId.Scp106 => Scp106MovementActions,
+                RoleTypeId.Scp939 => Scp939UtilityActions,
+                RoleTypeId.Scp3114 => Scp3114UtilityActions,
+                _ => Array.Empty<string>(),
+            };
+            if (combat.TryClickFirstDummyAction(actions))
+            {
+                nextSpecialAbilityTime = Time.time + SpecialAbilityCooldown;
             }
         }
 

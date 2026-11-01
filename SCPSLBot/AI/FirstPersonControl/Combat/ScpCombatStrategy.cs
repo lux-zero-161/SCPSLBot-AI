@@ -62,9 +62,12 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
         public void Run(CombatTarget target, RoleTypeId role)
         {
-            var targetPosition = target.Hub.transform.position;
+            var targetPosition = target.Position;
             combat.MoveToCombatPosition(targetPosition);
-            combat.OpenSurfaceDoorTowardTarget(target.Hub);
+            if (target.HasLineOfSight)
+            {
+                combat.OpenSurfaceDoorTowardTarget(target.Hub);
+            }
             ApplyDamageStrafe(targetPosition);
 
             var aimPoint = GetAimPoint(target);
@@ -76,7 +79,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
                 return;
             }
 
-            standardStrategy.TryUseChaseAbility(role);
+            standardStrategy.TryUseChaseAbility(role, target);
             if (standardStrategy.TryUseStrictAttack(role, target, this))
             {
                 return;
