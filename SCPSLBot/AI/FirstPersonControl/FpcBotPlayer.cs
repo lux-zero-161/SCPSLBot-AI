@@ -318,11 +318,11 @@ namespace SCPSLBot.AI.FirstPersonControl
             }
 
             var door = doorObstacle.GetLastDoor(
-                entry => CanUseDoorPermission(entry.DoorPermissions),
+                entry => CanUseDoorPermission(entry.Door),
                 out var goalPosition);
             if (door == null)
             {
-                return false;
+                return TryHandleNearbyClosedDoor();
             }
 
             if (door is BasicNonInteractableDoor && !door.TargetState)
@@ -361,44 +361,107 @@ namespace SCPSLBot.AI.FirstPersonControl
             return true;
         }
 
-        private bool CanUseDoorPermission(DoorPermissionFlags requiredPermissions)
+        private bool TryHandleNearbyClosedDoor()
         {
-            if (requiredPermissions == DoorPermissionFlags.None)
+            var origin = PlayerPosition + Vector3.up;
+            foreach (var collider in Physics.OverlapSphere(origin, 2.75f, DoorMask, QueryTriggerInteraction.Ignore))
             {
-                return true;
-            }
-
-            var hub = BotHub.PlayerHub;
-            if (hub.roleManager.CurrentRole is IDoorPermissionProvider roleProvider
-                && roleProvider.GetPermissions(null).HasFlag(requiredPermissions))
-            {
-                return true;
-            }
-
-            var inventory = hub.inventory;
-            var items = inventory?.UserInventory?.Items;
-            if (inventory == null || items == null)
-            {
-                return false;
-            }
-
-            foreach (var item in items.Values)
-            {
-                if (item is not KeycardItem keycard
-                    || !keycard.GetPermissions(null).HasFlag(requiredPermissions))
+                var door = collider.GetComponentInParent<DoorVariant>();
+                if (door == null || door.IsConsideredOpen() || !CanUseDoorPermission(door))
                 {
                     continue;
                 }
 
-                if (inventory.CurInstance != item)
+                if (door is BasicNonInteractableDoor)
                 {
-                    inventory.ServerSelectItem(item.ItemSerial);
+                    Move.DesiredLocalDirection = Vector3.zero;
+                    LookToPosition(door.transform.position + Vector3.up);
+                    return true;
+                }
+
+                if (!OpenDoor(door, 2.75f))
+                {
+                    InteractDoorDirectly(door, 2.75f);
+                    LookToPosition(door.transform.position + Vector3.up);
                 }
 
                 return true;
             }
 
             return false;
+        }
+
+        private bool CanUseDoorPermission(DoorVariant door)
+        {
+            if (door == null)
+            {
+                return false;
+            }
+
+            var policy = door.RequiredPermissions;
+            var requiredPermissions = policy.RequiredPermissions;
+            var hub = BotHub.PlayerHub;
+            if (hub.roleManager.CurrentRole.Team == Team.SCPs && !IsScp914Door(door))
+            {
+                return true;
+            }
+
+            if (requiredPermissions == DoorPermissionFlags.None)
+            {
+                return true;
+            }
+
+            var permissions = DoorPermissionFlags.None;
+            if (hub.roleManager.CurrentRole is IDoorPermissionProvider roleProvider)
+            {
+                permissions |= roleProvider.GetPermissions(null);
+            }
+
+            var inventory = hub.inventory;
+            var items = inventory?.UserInventory?.Items;
+            if (items == null)
+            {
+                return CanOpenDoorPermissions(permissions, requiredPermissions, policy.RequireAll);
+            }
+
+            foreach (var item in items.Values)
+            {
+                if (item is not IDoorPermissionProvider provider)
+                {
+                    continue;
+                }
+
+                var itemPermissions = provider.GetPermissions(null);
+                permissions |= itemPermissions;
+                if (!CanOpenDoorPermissions(itemPermissions, requiredPermissions, policy.RequireAll))
+                {
+                    continue;
+                }
+
+                if (inventory != null && inventory.CurInstance != item)
+                {
+                    inventory.ServerSelectItem(item.ItemSerial);
+                }
+                return true;
+            }
+
+            return CanOpenDoorPermissions(permissions, requiredPermissions, policy.RequireAll);
+        }
+
+        private static bool CanOpenDoorPermissions(
+            DoorPermissionFlags permissions,
+            DoorPermissionFlags requiredPermissions,
+            bool requireAll)
+        {
+            return requireAll
+                ? (permissions & requiredPermissions) == requiredPermissions
+                : (permissions & requiredPermissions) != DoorPermissionFlags.None;
+        }
+
+        private static bool IsScp914Door(DoorVariant door)
+        {
+            return door.name.IndexOf("914", StringComparison.OrdinalIgnoreCase) >= 0
+                   || door.GetType().Name.IndexOf("914", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private bool TryHandleElevatorObstacle()

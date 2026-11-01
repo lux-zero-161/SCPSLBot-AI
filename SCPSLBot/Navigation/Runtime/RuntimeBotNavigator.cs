@@ -2,6 +2,7 @@ using Interactables.Interobjects.DoorUtils;
 using SCPSLBot.AI.FirstPersonControl;
 using SCPSLBot.Navigation.Policy;
 using System.Collections.Generic;
+using PlayerRoles;
 using UnityEngine;
 using UnityEngine.AI;
 using LabLogger = LabApi.Features.Console.Logger;
@@ -582,7 +583,9 @@ namespace SCPSLBot.Navigation.Runtime
         private bool IsBypass()
         {
             var hub = botPlayer.BotHub?.PlayerHub;
-            return hub != null && hub.serverRoles != null && hub.serverRoles.BypassMode;
+            return hub != null
+                   && (hub.serverRoles != null && hub.serverRoles.BypassMode
+                       || hub.roleManager?.CurrentRole?.Team == Team.SCPs);
         }
 
         private void NoteReplan()

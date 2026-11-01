@@ -389,11 +389,6 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             var firearm = inventory.UserInventory.Items.Values.OfType<Firearm>().FirstOrDefault();
             if (firearm == null)
             {
-                firearm = inventory.ServerAddItem(ItemType.GunCOM15, ItemAddReason.AdminCommand) as Firearm;
-            }
-
-            if (firearm == null)
-            {
                 return null;
             }
 

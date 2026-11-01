@@ -124,6 +124,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
             {
                 var room = entry.Room;
                 if (room != null
+                    && !IsForbiddenScpRoom(room)
                     && room.Zone == roomWithin.Zone
                     && (room.Name == RoomName.Unnamed || room.Name != roomWithin.Name))
                 {
@@ -352,7 +353,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
 
             foreach (var room in backend.GetNavigableRooms())
             {
-                if (room != null && room.Zone == zone)
+                if (room != null && !IsForbiddenScpRoom(room) && room.Zone == zone)
                 {
                     AddFarSamples(backend.GetRoomSamples(room));
                 }
@@ -369,8 +370,18 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
 
             foreach (var room in backend.GetNavigableRooms())
             {
-                AddFarSamples(backend.GetRoomSamples(room));
+                if (!IsForbiddenScpRoom(room))
+                {
+                    AddFarSamples(backend.GetRoomSamples(room));
+                }
             }
+        }
+
+        private bool IsForbiddenScpRoom(RoomIdentifier room)
+        {
+            return botPlayer.BotHub.PlayerHub.roleManager.CurrentRole.Team == Team.SCPs
+                   && room != null
+                   && room.Name == RoomName.Lcz914;
         }
 
         private FacilityZone? GetNearestKnownZone()
