@@ -1,5 +1,6 @@
 using Interactables.Interobjects.DoorUtils;
 using MapGeneration;
+using PlayerRoles;
 using SCPSLBot.AI.FirstPersonControl.Mind.Door;
 using SCPSLBot.AI.FirstPersonControl.Perception.Senses;
 using SCPSLBot.Navigation;
@@ -22,6 +23,8 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
         private readonly System.Random random = new();
         private readonly List<Vector3> candidates = new();
         private readonly List<Vector3> recentTargets = new();
+        private int explorationPass;
+        private float nextStrategicZoneMoveTime;
 
         private Vector3? targetPosition;
         private FacilityZone? targetZone;
@@ -107,6 +110,16 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
         private void PickTarget(RoomSightSense roomSightSense, RoomIdentifier roomWithin)
         {
             candidates.Clear();
+
+            if (TryPickStrategicZoneTarget(roomWithin, out var strategicTarget))
+            {
+                targetPosition = strategicTarget;
+                targetZone = roomWithin.Zone;
+                RememberTarget(strategicTarget);
+                nextStrategicZoneMoveTime = Time.time + 45f;
+                return;
+            }
+
             foreach (var entry in roomSightSense.ForeignRoomEntries)
             {
                 var room = entry.Room;
@@ -144,12 +157,68 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
             targetZone = roomWithin.Zone;
         }
 
+        private bool TryPickStrategicZoneTarget(RoomIdentifier roomWithin, out Vector3 target)
+        {
+            target = default;
+            var role = botPlayer.BotHub.PlayerHub.roleManager.CurrentRole.RoleTypeId;
+            var isFoundationPatrol = role is RoleTypeId.NtfCaptain
+                or RoleTypeId.NtfPrivate
+                or RoleTypeId.NtfSergeant
+                or RoleTypeId.NtfSpecialist
+                or RoleTypeId.ChaosConscript
+                or RoleTypeId.ChaosMarauder
+                or RoleTypeId.ChaosRepressor
+                or RoleTypeId.ChaosRifleman;
+            if (!isFoundationPatrol || Time.time < nextStrategicZoneMoveTime)
+            {
+                return false;
+            }
+
+            FacilityZone? destination = roomWithin.Zone switch
+            {
+                FacilityZone.Surface => FacilityZone.Entrance,
+                FacilityZone.Entrance => FacilityZone.HeavyContainment,
+                FacilityZone.HeavyContainment => FacilityZone.Entrance,
+                _ => null,
+            };
+            return destination.HasValue && TryPickZoneSample(destination.Value, out target);
+        }
+
+        private bool TryPickZoneSample(FacilityZone zone, out Vector3 target)
+        {
+            var backend = Backend;
+            if (backend != null)
+            {
+                foreach (var room in backend.GetNavigableRooms())
+                {
+                    if (room == null || room.Zone != zone)
+                    {
+                        continue;
+                    }
+
+                    foreach (var sample in backend.GetRoomSamples(room))
+                    {
+                        if (botPlayer.Navigator.CanReach(sample))
+                        {
+                            target = sample;
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            target = default;
+            return false;
+        }
+
         // Prefer a reachable point that has not just been visited. A purely random picker often
         // selects the same room sample again, which makes a bot appear to jump or turn in place.
         private Vector3 PickReachable()
         {
             var selected = candidates[random.Next(candidates.Count)];
             var fallback = selected;
+            Vector3? verticalCandidate = null;
+            var preferVertical = ++explorationPass % 3 == 0;
             var foundFresh = false;
             for (var attempt = 0; attempt < Math.Min(candidates.Count, 12); attempt++)
             {
@@ -160,7 +229,17 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
                 }
 
                 fallback = candidate;
+                if (Mathf.Abs(candidate.y - botPlayer.PlayerPosition.y) > 1f)
+                {
+                    verticalCandidate = candidate;
+                }
+
                 if (IsRecentTarget(candidate))
+                {
+                    continue;
+                }
+
+                if (preferVertical && Mathf.Abs(candidate.y - botPlayer.PlayerPosition.y) <= 1f)
                 {
                     continue;
                 }
@@ -172,7 +251,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Roaming
 
             if (!foundFresh)
             {
-                selected = fallback;
+                selected = preferVertical && verticalCandidate.HasValue ? verticalCandidate.Value : fallback;
             }
 
             RememberTarget(selected);

@@ -10,6 +10,7 @@ using Scp914;
 using SCPSLBot.AI.FirstPersonControl.Mind.Item.Actions;
 using SCPSLBot.AI.FirstPersonControl.Mind.Scp914;
 using SCPSLBot.AI.FirstPersonControl.Perception.Senses;
+using SCPSLBot.Navigation;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -32,6 +33,8 @@ namespace SCPSLBot.AI.FirstPersonControl
             Configure914,
             WaitFor914,
             CollectFrom914,
+            VisitCandy,
+            LootCandy,
             Finished,
         }
 
@@ -48,7 +51,8 @@ namespace SCPSLBot.AI.FirstPersonControl
         private float collectUntil;
         private float transformationStartedAt;
         private int expected914Generation;
-        private bool used914ThisLife;
+        private bool candyVisited;
+        private float candySearchUntil;
 
         public FpcHumanFacilityRoutine(FpcBotPlayer botPlayer)
         {
@@ -81,12 +85,13 @@ namespace SCPSLBot.AI.FirstPersonControl
                     return true;
                 }
 
-                if (TryFindUpgradeableCard(out _))
+                if (IsEscapeRole() && TryFindUpgradeableCard(out _))
                 {
-                    if (!used914ThisLife)
-                    {
-                        state = ProgressState.TravelTo914;
-                    }
+                    state = ProgressState.TravelTo914;
+                }
+                else if (ShouldVisitCandy())
+                {
+                    state = ProgressState.VisitCandy;
                 }
                 else if (TrySearchLocker())
                 {
@@ -106,6 +111,8 @@ namespace SCPSLBot.AI.FirstPersonControl
                 ProgressState.Configure914 => Configure914(),
                 ProgressState.WaitFor914 => WaitFor914(),
                 ProgressState.CollectFrom914 => CollectFrom914(),
+                ProgressState.VisitCandy => VisitCandyRoom(),
+                ProgressState.LootCandy => LootCandyBowl(),
                 _ => false,
             };
         }
@@ -119,10 +126,21 @@ namespace SCPSLBot.AI.FirstPersonControl
             collectUntil = 0f;
             transformationStartedAt = 0f;
             expected914Generation = 0;
-            used914ThisLife = false;
+            candyVisited = false;
+            candySearchUntil = 0f;
         }
 
         private bool IsHumanRole()
+        {
+            var role = botPlayer.BotHub.PlayerHub.roleManager.CurrentRole;
+            return role != null
+                   && role.Team != Team.SCPs
+                   && role.Team != Team.Dead
+                   && role.RoleTypeId != RoleTypeId.Spectator
+                   && role.RoleTypeId != RoleTypeId.None;
+        }
+
+        private bool IsEscapeRole()
         {
             var role = botPlayer.BotHub.PlayerHub.roleManager.CurrentRole.RoleTypeId;
             return role is RoleTypeId.ClassD or RoleTypeId.Scientist;
@@ -197,7 +215,7 @@ namespace SCPSLBot.AI.FirstPersonControl
             }
 
             return item.Info.ItemId.ToString() is
-                "Medkit" or "SCP500" or "Adrenaline" or "Painkillers" or "SCP207"
+                "Medkit" or "SCP500" or "Adrenaline" or "Painkillers" or "SCP207" or "SCP330"
                 or "ArmorLight" or "ArmorCombat" or "ArmorHeavy"
                 or "GrenadeHE" or "GrenadeFlash" or "MicroHID"
                 or "GunE11SR" or "GunAK" or "GunFSP9" or "GunShotgun" or "GunLogicer";
@@ -207,6 +225,98 @@ namespace SCPSLBot.AI.FirstPersonControl
         {
             return botPlayer.BotHub.PlayerHub.inventory.UserInventory.Items.Values
                 .Any(item => item.ItemTypeId.ToString() == itemTypeName);
+        }
+
+        private bool ShouldVisitCandy()
+        {
+            return !candyVisited
+                   && !AlreadyCarriesItem("SCP330")
+                   && Mathf.Abs(botPlayer.BotHub.PlayerHub.PlayerId) % 2 == 0;
+        }
+
+        private bool TryGetCandyRoomGoal(out Vector3 goal)
+        {
+            var backend = NavigationSystem.Instance.Backend;
+            if (backend != null)
+            {
+                foreach (var room in backend.GetNavigableRooms())
+                {
+                    if (room == null || !string.Equals(room.Name.ToString(), "Lcz330", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var samples = backend.GetRoomSamples(room);
+                    if (samples != null && samples.Count > 0)
+                    {
+                        goal = samples[0];
+                        return true;
+                    }
+                }
+            }
+
+            goal = default;
+            return false;
+        }
+
+        private bool VisitCandyRoom()
+        {
+            if (!TryGetCandyRoomGoal(out var goal))
+            {
+                candyVisited = true;
+                state = ProgressState.Idle;
+                return false;
+            }
+
+            if (RoomUtils.TryGetRoom(botPlayer.PlayerPosition, out var room)
+                && string.Equals(room?.Name.ToString(), "Lcz330", StringComparison.OrdinalIgnoreCase))
+            {
+                state = ProgressState.LootCandy;
+                candySearchUntil = Time.time + 8f;
+                return LootCandyBowl();
+            }
+
+            botPlayer.MoveToPosition(goal);
+            return true;
+        }
+
+        private bool LootCandyBowl()
+        {
+            var interactables = botPlayer.Perception.GetSense<InteractablesWithinSightSense>();
+            var candyInteractable = interactables.InteractableCollidersWithinSight.FirstOrDefault(interactable =>
+                interactable?.Target != null
+                && (interactable.Target.GetType().Name.IndexOf("Scp330", StringComparison.OrdinalIgnoreCase) >= 0
+                    || interactable.name.IndexOf("330", StringComparison.OrdinalIgnoreCase) >= 0
+                    || interactable.name.IndexOf("Candy", StringComparison.OrdinalIgnoreCase) >= 0));
+
+            if (candyInteractable == null)
+            {
+                if (Time.time >= candySearchUntil)
+                {
+                    candyVisited = true;
+                    state = ProgressState.Idle;
+                    return false;
+                }
+
+                return true;
+            }
+
+            var collider = candyInteractable.GetComponent<Collider>();
+            var targetPosition = collider != null ? collider.bounds.center : botPlayer.PlayerPosition;
+            if (Vector3.Distance(botPlayer.CameraPosition, targetPosition) > 1.8f)
+            {
+                botPlayer.MoveToPosition(targetPosition);
+                return true;
+            }
+
+            botPlayer.LookToPosition(targetPosition);
+            if (botPlayer.Interact(candyInteractable))
+            {
+                candyVisited = true;
+                state = ProgressState.Idle;
+            }
+
+            return true;
         }
 
         private bool TrySearchLocker()
@@ -400,7 +510,6 @@ namespace SCPSLBot.AI.FirstPersonControl
             if (location == null || !location.OutakeChamberPosition.HasValue)
             {
                 state = ProgressState.Finished;
-                used914ThisLife = true;
                 return false;
             }
 
@@ -420,8 +529,9 @@ namespace SCPSLBot.AI.FirstPersonControl
                 botPlayer.LookToPosition(output.Position);
                 if (BotPickup.TryComplete(botPlayer.BotHub.PlayerHub, output))
                 {
-                    state = ProgressState.Finished;
-                    used914ThisLife = true;
+                    // If the new card still cannot open the exit gates, the next decision cycle
+                    // deliberately upgrades it again instead of abandoning the escape plan.
+                    state = ProgressState.Idle;
                     return true;
                 }
 
@@ -431,7 +541,6 @@ namespace SCPSLBot.AI.FirstPersonControl
             if (Time.time >= collectUntil)
             {
                 state = ProgressState.Finished;
-                used914ThisLife = true;
                 return false;
             }
 

@@ -60,6 +60,11 @@ namespace SCPSLBot.AI.FirstPersonControl
         public FpcObstacleAvoidance ObstacleAvoidance { get; }
 
         private float nextPerceptionUpdateTime;
+        private IAction observedMindAction;
+        private Vector3 mindActionProgressPosition;
+        private float mindActionProgressAt;
+
+        private const float MindActionStallSeconds = 4f;
 
         public FpcBotPlayer(BotHub botHub)
         {
@@ -200,8 +205,14 @@ namespace SCPSLBot.AI.FirstPersonControl
 
             // Goal-driven actions already set movement. If no goal is active, keep exploring
             // instead of standing in one room; this also applies on the Surface.
-            if (!ShouldUseEscapeGoal() || MindRunner.RunningAction == null)
+            var mindActionStalled = IsMindActionStalled();
+            if (!ShouldUseEscapeGoal() || MindRunner.RunningAction == null || mindActionStalled)
             {
+                if (mindActionStalled)
+                {
+                    MindRunner.Stop();
+                }
+
                 ZoneRoam.Tick();
             }
             else
@@ -241,6 +252,9 @@ namespace SCPSLBot.AI.FirstPersonControl
             PerceptionComponent.enabled = true;
 
             nextPerceptionUpdateTime = Time.time;
+            observedMindAction = null;
+            mindActionProgressAt = Time.time;
+            mindActionProgressPosition = PlayerPosition;
             HumanFacilityRoutine.Reset();
             if (ShouldUseEscapeGoal())
             {
@@ -251,6 +265,33 @@ namespace SCPSLBot.AI.FirstPersonControl
                 MindRunner.Stop();
             }
             StuckRecovery.Reset();
+        }
+
+        private bool IsMindActionStalled()
+        {
+            var action = MindRunner.RunningAction;
+            if (action == null)
+            {
+                observedMindAction = null;
+                return false;
+            }
+
+            if (!ReferenceEquals(action, observedMindAction))
+            {
+                observedMindAction = action;
+                mindActionProgressPosition = PlayerPosition;
+                mindActionProgressAt = Time.time;
+                return false;
+            }
+
+            if (Vector3.Distance(PlayerPosition, mindActionProgressPosition) > 0.35f)
+            {
+                mindActionProgressPosition = PlayerPosition;
+                mindActionProgressAt = Time.time;
+                return false;
+            }
+
+            return Time.time - mindActionProgressAt >= MindActionStallSeconds;
         }
 
         public void NotifyHeard(ReferenceHub source, Vector3 soundPosition)
@@ -334,8 +375,9 @@ namespace SCPSLBot.AI.FirstPersonControl
                 return true;
             }
 
-            var items = hub.inventory?.UserInventory?.Items;
-            if (items == null)
+            var inventory = hub.inventory;
+            var items = inventory?.UserInventory?.Items;
+            if (inventory == null || items == null)
             {
                 return false;
             }
@@ -348,9 +390,9 @@ namespace SCPSLBot.AI.FirstPersonControl
                     continue;
                 }
 
-                if (hub.inventory.CurInstance != item)
+                if (inventory.CurInstance != item)
                 {
-                    hub.inventory.ServerSelectItem(item.ItemSerial);
+                    inventory.ServerSelectItem(item.ItemSerial);
                 }
 
                 return true;

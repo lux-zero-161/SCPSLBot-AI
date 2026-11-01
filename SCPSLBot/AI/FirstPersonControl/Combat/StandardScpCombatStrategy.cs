@@ -17,6 +17,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private const float StrictAttackAimAngle = 14f;
         private const float Scp049SenseCooldown = 4f;
         private const float SpecialAbilityCooldown = 2.5f;
+        private const float Scp049ReviveRange = 3.5f;
 
         private static readonly string[] Scp939AttackActions =
         {
@@ -61,6 +62,14 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             "Scp049SenseAbility:ToggleFlashlight->Click",
         };
 
+        private static readonly string[] Scp049ReviveActions =
+        {
+            "Scp049ResurrectAbility:Shoot->Click",
+            "Scp049ResurrectAbility:ToggleFlashlight->Click",
+            "Scp049ResurrectAbility:Interact->Click",
+            "Scp049Resurrect:Shoot->Click",
+        };
+
         private static readonly string[] Scp049AttackActions =
         {
             "Scp049AttackAbility:Shoot->Click",
@@ -75,6 +84,7 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
         private readonly FpcBotCombat combat;
         private readonly Scp096CombatStrategy scp096Strategy;
         private float nextScp049SenseTime;
+        private float nextScp049ReviveTime;
         private float nextSpecialAbilityTime;
 
         public StandardScpCombatStrategy(FpcBotCombat combat, Scp096CombatStrategy scp096Strategy)
@@ -103,6 +113,11 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
             if (role == RoleTypeId.Scp049)
             {
+                if (TryUseScp049Revive())
+                {
+                    return;
+                }
+
                 if (Time.time < nextScp049SenseTime)
                 {
                     return;
@@ -123,7 +138,12 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
             var shouldUse = role switch
             {
-                RoleTypeId.Scp106 => target.Distance > 6f || !target.HasLineOfSight,
+                // Stalk is a movement ability. Never fire it at a remembered/hidden point or an
+                // unreachable destination: that is what can place Larry outside the walkable floor.
+                RoleTypeId.Scp106 => target.HasLineOfSight
+                                      && target.Distance > 8f
+                                      && target.Distance < 24f
+                                      && combat.BotPlayer.Navigator.CanReach(target.Position),
                 RoleTypeId.Scp939 => target.Distance > 5f,
                 RoleTypeId.Scp3114 => target.Distance > 8f,
                 _ => false,
@@ -148,6 +168,11 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
         public bool TryUseIdleUtility(RoleTypeId role)
         {
+            if (role == RoleTypeId.Scp049 && TryUseScp049Revive())
+            {
+                return true;
+            }
+
             if (Time.time < nextSpecialAbilityTime)
             {
                 return false;
@@ -171,6 +196,54 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
             nextSpecialAbilityTime = Time.time + SpecialAbilityCooldown;
             return true;
+        }
+
+        private bool TryUseScp049Revive()
+        {
+            if (Time.time < nextScp049ReviveTime
+                || combat.BotPlayer.BotHub.PlayerHub.roleManager.CurrentRole.RoleTypeId != RoleTypeId.Scp049)
+            {
+                return false;
+            }
+
+            Transform nearestRagdoll = null;
+            var nearestDistance = float.PositiveInfinity;
+            foreach (var ragdoll in PlayerRoles.Ragdolls.RagdollManager.AllRagdolls)
+            {
+                if (ragdoll == null)
+                {
+                    continue;
+                }
+
+                var distance = Vector3.Distance(combat.BotPlayer.PlayerPosition, ragdoll.transform.position);
+                if (distance < nearestDistance)
+                {
+                    nearestDistance = distance;
+                    nearestRagdoll = ragdoll.transform;
+                }
+            }
+
+            if (nearestRagdoll == null)
+            {
+                return false;
+            }
+
+            if (nearestDistance > Scp049ReviveRange)
+            {
+                combat.MoveToCombatPosition(nearestRagdoll.position);
+                combat.BotPlayer.LookToPosition(nearestRagdoll.position + Vector3.up);
+                return true;
+            }
+
+            var aimPoint = nearestRagdoll.position + Vector3.up;
+            combat.BotPlayer.LookToPosition(aimPoint);
+            if (!combat.IsAimedAt(aimPoint, 20f))
+            {
+                return true;
+            }
+
+            nextScp049ReviveTime = Time.time + 2f;
+            return combat.TryClickFirstDummyAction(Scp049ReviveActions);
         }
 
         public bool TryUseStrictAttack(RoleTypeId role, CombatTarget target, ScpCombatStrategy coordinator)

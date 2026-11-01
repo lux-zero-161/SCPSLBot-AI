@@ -161,10 +161,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             }
 
             var used = combat.TryClickFirstDummyAction(
-                "MicroHID:Shoot->Click",
-                "MicroHID:Fire->Click",
-                "MicroHID:Shoot->Hold",
-                "MicroHID:Fire->Hold");
+                new[]
+                {
+                    "MicroHID:Shoot->Click",
+                    "MicroHID:Fire->Click",
+                    "MicroHID:Shoot->Hold",
+                    "MicroHID:Fire->Hold",
+                });
             if (used)
             {
                 BotManager.Instance.NotifyCombatSound(combat.BotPlayer.BotHub.PlayerHub);
@@ -199,10 +202,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
             nextSurrenderAttemptTime = Time.time + 8f;
             if (!combat.TryClickFirstDummyAction(
+                    new[]
+                    {
                     "Surrender:Toggle->Click",
                     "Surrender:RaiseHands->Click",
                     "PlayerSurrender:Toggle->Click",
-                    "Surrender->Click"))
+                    "Surrender->Click",
+                    }))
             {
                 return false;
             }
@@ -258,10 +264,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
             nextMedicalActionTime = Time.time + 0.75f;
             var itemName = medicalItem.ItemTypeId.ToString();
             return combat.TryClickFirstDummyAction(
-                $"{itemName}:Use->Click",
-                $"{itemName}:Activate->Click",
-                $"{itemName}:Shoot->Click",
-                "Use->Click");
+                new[]
+                {
+                    $"{itemName}:Use->Click",
+                    $"{itemName}:Activate->Click",
+                    $"{itemName}:Shoot->Click",
+                    "Use->Click",
+                });
         }
 
         private bool TryUseThrowable(CombatTarget target)
@@ -294,10 +303,13 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
             var itemName = grenade.ItemTypeId.ToString();
             var used = combat.TryClickFirstDummyAction(
-                $"{itemName}:Throw->Click",
-                $"{itemName}:Shoot->Click",
-                $"{itemName}:Use->Click",
-                "Throw->Click");
+                new[]
+                {
+                    $"{itemName}:Throw->Click",
+                    $"{itemName}:Shoot->Click",
+                    $"{itemName}:Use->Click",
+                    "Throw->Click",
+                });
             if (!used)
             {
                 nextThrowableTime = Time.time + 2f;
@@ -346,11 +358,14 @@ namespace SCPSLBot.AI.FirstPersonControl.Combat
 
             nextSpeedItemTime = Time.time + 2f;
             var used = combat.TryClickFirstDummyAction(
-                "SCP207:Use->Click",
-                "Scp207:Use->Click",
-                "SCP207:Drink->Click",
-                "Scp207:Drink->Click",
-                "Use->Click");
+                new[]
+                {
+                    "SCP207:Use->Click",
+                    "Scp207:Use->Click",
+                    "SCP207:Drink->Click",
+                    "Scp207:Drink->Click",
+                    "Use->Click",
+                });
             if (!used)
             {
                 var firearm = inventory.UserInventory.Items.Values.OfType<Firearm>().FirstOrDefault();
